@@ -6,13 +6,22 @@ import { motion } from "framer-motion";
 import { DASHBOARD_NAV } from "@/lib/constants";
 import { cn } from "@/lib/utils/cn";
 
-export function Sidebar() {
+interface SidebarProps {
+  isAdmin: boolean;
+}
+
+export function Sidebar({ isAdmin }: SidebarProps) {
   const pathname = usePathname();
 
   return (
     <aside className="hidden w-72 shrink-0 lg:block">
       <div className="sticky top-6 glass-panel overflow-hidden p-4">
         <nav className="space-y-2">
+          {isAdmin ? (
+            <Link href="/admin" className="relative flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold text-primary transition hover:bg-primary/10">
+              <span className="relative z-10">Switch to Admin Console</span>
+            </Link>
+          ) : null}
           {DASHBOARD_NAV.map((item) => {
             const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
             const Icon = item.icon;

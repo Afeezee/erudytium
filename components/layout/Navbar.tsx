@@ -14,9 +14,10 @@ import type { Notification } from "@/types";
 interface NavbarProps {
   userId: string;
   notifications: Notification[];
+  isAdmin: boolean;
 }
 
-export function Navbar({ userId, notifications }: NavbarProps) {
+export function Navbar({ userId, notifications, isAdmin }: NavbarProps) {
   const pathname = usePathname();
 
   return (
@@ -29,6 +30,11 @@ export function Navbar({ userId, notifications }: NavbarProps) {
         </div>
       </div>
       <nav className="hidden items-center gap-1 lg:flex">
+        {isAdmin ? (
+          <Link href="/admin" className="rounded-full px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/10">
+            Switch to Admin Console
+          </Link>
+        ) : null}
         {DASHBOARD_NAV.map((item) => {
           const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
           return (
@@ -52,6 +58,11 @@ export function Navbar({ userId, notifications }: NavbarProps) {
                 <DialogDescription>Use these shortcuts to move between the main dashboard sections on smaller screens.</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 pt-6">
+                {isAdmin ? (
+                  <Link href="/admin" className="block rounded-2xl px-4 py-3 text-sm font-semibold text-primary transition hover:bg-primary/10">
+                    Switch to Admin Console
+                  </Link>
+                ) : null}
                 {DASHBOARD_NAV.map((item) => (
                   <Link key={item.href} href={item.href} className="block rounded-2xl px-4 py-3 text-sm font-medium transition hover:bg-neutral-100 dark:hover:bg-neutral-900">
                     {item.label}
