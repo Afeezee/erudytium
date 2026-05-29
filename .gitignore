@@ -1,0 +1,11 @@
+.next
+.swc
+.tmp
+.vercel
+node_modules
+coverage
+tsconfig.tsbuildinfo
+.env
+.env.*
+!.env.local.example
+*.log
