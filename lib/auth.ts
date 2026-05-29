@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
@@ -37,7 +38,7 @@ const bootstrapCurrentUserRecord = async (clerkId: string) => {
     name,
     avatar_url: clerkUser.imageUrl ?? null
   };
-  const { data, error } = await supabase.from("users").insert(payload).select("*").single<User>();
+  const { data, error } = await supabase.from("users").upsert(payload, { onConflict: "clerk_id" }).select("*").single<User>();
 
   if (!error) {
     return data;
@@ -56,7 +57,7 @@ const bootstrapCurrentUserRecord = async (clerkId: string) => {
   throw new Error(error.message);
 };
 
-export const getCurrentUserRecord = async () => {
+export const getCurrentUserRecord = cache(async () => {
   const authState = await requireAuth();
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -74,7 +75,7 @@ export const getCurrentUserRecord = async () => {
   }
 
   return bootstrapCurrentUserRecord(authState.userId);
-};
+});
 
 export const requireRole = async (roles: UserRole[]) => {
   const user = await getCurrentUserRecord();
