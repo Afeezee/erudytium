@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { ALLOWED_RESOURCE_MIME_TYPES, MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET } from "@/lib/constants";
 import { reviewSchema, requestResourceSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
@@ -74,8 +75,9 @@ export const uploadResource = async (formData: FormData): Promise<ApiResponse<Re
       .filter(Boolean);
     const validated = await validateResourceFile(file);
     const supabase = await createClient();
+    const adminClient = getAdminClient();
     const filePath = `${user.id}/${Date.now()}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.${validated.ext}`;
-    const { error: uploadError } = await supabase.storage.from(RESOURCE_BUCKET).upload(filePath, validated.buffer, {
+    const { error: uploadError } = await adminClient.storage.from(RESOURCE_BUCKET).upload(filePath, validated.buffer, {
       contentType: validated.mime,
       upsert: false
     });
@@ -84,7 +86,7 @@ export const uploadResource = async (formData: FormData): Promise<ApiResponse<Re
       throw new Error(uploadError.message);
     }
 
-    const { data: publicUrlData } = supabase.storage.from(RESOURCE_BUCKET).getPublicUrl(filePath);
+    const { data: publicUrlData } = adminClient.storage.from(RESOURCE_BUCKET).getPublicUrl(filePath);
     const resource = await insertResourceQuery(supabase, {
       title,
       description,
@@ -109,9 +111,10 @@ export const uploadResource = async (formData: FormData): Promise<ApiResponse<Re
 export const downloadResource = async (id: string): Promise<ApiResponse<{ signedUrl: string }>> => {
   try {
     const supabase = await createClient();
+    const adminClient = getAdminClient();
     const fileUrl = await incrementResourceDownloadQuery(supabase, id);
     const path = new URL(fileUrl).pathname.split(`/${RESOURCE_BUCKET}/`)[1];
-    const { data, error } = await supabase.storage.from(RESOURCE_BUCKET).createSignedUrl(path, 60);
+    const { data, error } = await adminClient.storage.from(RESOURCE_BUCKET).createSignedUrl(path, 60);
 
     if (error) {
       throw new Error(error.message);

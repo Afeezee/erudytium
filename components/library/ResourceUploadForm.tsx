@@ -19,13 +19,14 @@ import { z } from "zod";
 const uploadSchema = z.object({
   title: z.string().min(3),
   description: z.string().min(10),
-  categoryId: z.string().uuid(),
+  categoryId: z.string().uuid().optional().or(z.literal("")),
   restrictedTo: z.enum(["all", "lecturers_only", "final_year_only"])
 });
 
 type UploadValues = z.infer<typeof uploadSchema>;
 
 export function ResourceUploadForm({ categories }: { categories: Category[] }) {
+  const hasCategories = categories.length > 0;
   const [file, setFile] = useState<File | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [progress, setProgress] = useState<number | undefined>();
@@ -60,7 +61,7 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
           const formData = new FormData();
           formData.set("title", values.title);
           formData.set("description", values.description);
-          formData.set("categoryId", values.categoryId);
+          formData.set("categoryId", values.categoryId ?? "");
           formData.set("restrictedTo", values.restrictedTo);
           formData.set("tags", tags.join(","));
           formData.set("file", file);
@@ -76,7 +77,12 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
 
           setFile(null);
           setTags([]);
-          form.reset();
+          form.reset({
+            title: "",
+            description: "",
+            categoryId: categories[0]?.id ?? "",
+            restrictedTo: "all"
+          });
           toast.success("Your resource has been submitted for review");
         });
       })}
@@ -96,16 +102,25 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
           <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-2">
               <Label>Category</Label>
-              <Select value={form.watch("categoryId")} onValueChange={(value) => form.setValue("categoryId", value)}>
-                <SelectTrigger>
+              <Select value={form.watch("categoryId") ?? ""} onValueChange={(value) => form.setValue("categoryId", value, { shouldValidate: true })}>
+                <SelectTrigger disabled={!hasCategories}>
                   <SelectValue placeholder="Choose category" />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((category) => (
-                    <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
-                  ))}
+                  {hasCategories ? (
+                    categories.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">No categories available yet.</div>
+                  )}
                 </SelectContent>
               </Select>
+              {hasCategories ? (
+                <p className="text-xs text-error">{form.formState.errors.categoryId?.message}</p>
+              ) : (
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">Resources can still be submitted without a category until categories are added.</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Access</Label>
