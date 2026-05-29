@@ -68,8 +68,6 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
       await deleteRoomQuery(supabase, roomId).catch(() => undefined);
       throw membershipError;
     }
-
-    revalidatePath("/dashboard/rooms");
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to create room." };
   }
