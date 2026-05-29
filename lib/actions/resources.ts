@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
 import { ALLOWED_RESOURCE_MIME_TYPES, MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET } from "@/lib/constants";
 import { reviewSchema, requestResourceSchema } from "@/lib/validations";
-import { getRateLimiter } from "@/lib/utils/rateLimit";
 import { stripHtml } from "@/lib/utils/sanitize";
 import {
   createResourceRequestQuery,
@@ -59,13 +58,6 @@ export const getCategories = async (): Promise<ApiResponse<Category[]>> => {
 export const uploadResource = async (formData: FormData): Promise<ApiResponse<Resource>> => {
   try {
     const user = await getCurrentUserRecord();
-    const rateLimiter = getRateLimiter("resource-upload", 5, "1 h");
-    const rate = await rateLimiter.limit(user.id);
-
-    if (!rate.success) {
-      return { error: "rate_limit", retryAfter: Math.ceil((rate.reset - Date.now()) / 1000) };
-    }
-
     const file = formData.get("file");
 
     if (!(file instanceof File)) {
@@ -155,13 +147,6 @@ export const submitReview = async (resourceId: string, rating: number, comment?:
 
   try {
     const user = await getCurrentUserRecord();
-    const rateLimiter = getRateLimiter("resource-review", 10, "1 h");
-    const rate = await rateLimiter.limit(user.id);
-
-    if (!rate.success) {
-      return { error: "rate_limit", retryAfter: Math.ceil((rate.reset - Date.now()) / 1000) };
-    }
-
     const supabase = await createClient();
     const review = await upsertReviewQuery(supabase, {
       user_id: user.id,

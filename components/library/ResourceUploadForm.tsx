@@ -70,7 +70,7 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
           setProgress(undefined);
 
           if (result.error) {
-            setError(result.error === "rate_limit" ? "Upload rate limit reached. Please try again later." : result.error);
+            setError(result.error);
             return;
           }
 

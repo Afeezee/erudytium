@@ -9,7 +9,7 @@ Erudytium is a production-oriented academic platform that combines an e-library 
 - Full e-library workflow: search, filtering, upload moderation, bookmarks, reviews, citations, and requests
 - Real-time study rooms with presence, typing indicators, pinned messages, invite codes, moderation, and attachments
 - Admin console for analytics, users, resources, requests, rooms, announcements, and audit logs
-- Notification preferences, announcement publishing, rate limiting, and file validation safeguards
+- Notification preferences, announcement publishing, and file validation safeguards
 
 ## Tech Stack
 
@@ -25,7 +25,6 @@ Erudytium is a production-oriented academic platform that combines an e-library 
 | Charts | Recharts |
 | Animations | Framer Motion |
 | Email | Resend |
-| Rate Limiting | Upstash Redis + @upstash/ratelimit |
 | Deployment | Vercel |
 | Testing | Jest + Testing Library |
 
@@ -43,7 +42,7 @@ npm install
 copy .env.local.example .env.local
 ```
 
-3. Fill in the required Clerk, Supabase, Resend, Upstash, and app URL variables.
+3. Fill in the required Clerk, Supabase, Resend, and app URL variables.
 
 4. Apply the SQL migrations in `supabase/migrations/` to your Supabase project in timestamp order.
 
@@ -81,8 +80,6 @@ npm test
 | CLERK_SECRET_KEY | Clerk secret key |
 | CLERK_WEBHOOK_SECRET | Svix secret for Clerk webhook verification and user profile sync |
 | RESEND_API_KEY | Resend API key for outbound email delivery |
-| UPSTASH_REDIS_REST_URL | Upstash REST endpoint for rate limiting |
-| UPSTASH_REDIS_REST_TOKEN | Upstash REST token |
 | NEXT_PUBLIC_APP_URL | Public application base URL |
 
 ## Folder Structure

@@ -6,7 +6,6 @@ import { getCurrentUserRecord, requireRole } from "@/lib/auth";
 import { roomSchema } from "@/lib/validations";
 import { createAuditLogQuery } from "@/lib/supabase/audit";
 import { createNotification } from "@/lib/actions/notifications";
-import { getRateLimiter } from "@/lib/utils/rateLimit";
 import { parseMentions } from "@/lib/utils";
 import { stripHtml } from "@/lib/utils/sanitize";
 import {
@@ -114,13 +113,6 @@ export const leaveRoom = async (roomId: string): Promise<ApiResponse<null>> => {
 export const sendMessage = async (roomId: string, content: string, fileUrl?: string): Promise<ApiResponse<Message>> => {
   try {
     const user = await getCurrentUserRecord();
-    const rateLimiter = getRateLimiter("room-message", 30, "60 s");
-    const rate = await rateLimiter.limit(user.id);
-
-    if (!rate.success) {
-      return { error: "rate_limit", retryAfter: Math.ceil((rate.reset - Date.now()) / 1000) };
-    }
-
     const supabase = await createClient();
     const message = await insertMessageQuery(supabase, {
       room_id: roomId,
