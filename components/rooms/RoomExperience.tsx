@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -75,13 +75,16 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   }, []);
 
   useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
+    let isMounted = true;
+    let supabaseClient: ReturnType<typeof createClient> | null = null;
+    let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
 
     const setupRealtime = async () => {
       const token = await getToken({ skipCache: true });
       const supabase = createClient(token ?? undefined);
-      const channel = supabase
-        .channel(`room:${room.id}`, {
+      supabaseClient = supabase;
+      channel = supabase
+        .channel(`room:${room.id}:${currentUser.id}:${Date.now()}`, {
           config: {
             presence: { key: currentUser.id },
             broadcast: { self: false }
@@ -96,6 +99,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             filter: `room_id=eq.${room.id}`
           },
           (payload) => {
+            if (!isMounted) {
+              return;
+            }
+
             const message = payload.new as Message;
             setMessages((current) => {
               if (current.some((item) => item.id === message.id)) {
@@ -111,29 +118,44 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
           }
         )
         .on("broadcast", { event: "typing" }, ({ payload }) => {
+          if (!isMounted) {
+            return;
+          }
+
           setTypingUser(payload.name as string);
           window.clearTimeout(typingTimeoutRef.current ?? undefined);
           typingTimeoutRef.current = window.setTimeout(() => setTypingUser(null), 2000);
         })
         .on("presence", { event: "sync" }, () => {
+          if (!isMounted || !channel) {
+            return;
+          }
+
           const state = channel.presenceState();
           setOnlineUserIds(Object.keys(state));
         })
         .subscribe(async (status) => {
-          if (status === "SUBSCRIBED") {
+          if (status === "SUBSCRIBED" && channel) {
             await channel.track({ userId: currentUser.id, name: currentUser.name ?? currentUser.email });
           }
         });
 
       channelRef.current = channel;
-      unsubscribe = () => {
-        channel.unsubscribe();
-      };
     };
 
     void setupRealtime();
 
-    return () => unsubscribe?.();
+    return () => {
+      isMounted = false;
+      channelRef.current = null;
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+      if (channel) {
+        void channel.unsubscribe();
+        supabaseClient?.removeChannel(channel);
+      }
+    };
   }, [currentUser.email, currentUser.id, currentUser.name, getToken, room.id]);
 
   const examCountdown = useMemo(() => {
@@ -365,6 +387,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     <DialogContent className="max-w-sm">
                       <DialogHeader>
                         <DialogTitle>Pick an emoji</DialogTitle>
+                        <DialogDescription>Add a quick reaction or visual cue to your current message draft.</DialogDescription>
                       </DialogHeader>
                       <div className="grid grid-cols-4 gap-3 pt-4">
                         {EMOJIS.map((emoji) => (
@@ -382,6 +405,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     <DialogContent>
                       <DialogHeader>
                         <DialogTitle>Share a library resource</DialogTitle>
+                        <DialogDescription>Search approved library resources and insert a share link into the room chat.</DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4 pt-4">
                         <Input placeholder="Search resources" value={shareQuery} onChange={(event) => setShareQuery(event.target.value)} />

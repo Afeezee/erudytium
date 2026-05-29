@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { approveResource, rejectResource } from "@/lib/actions/resources";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -48,6 +48,7 @@ export function ModerationTable({ pending, approved, rejected }: { pending: Reso
                       <DialogContent>
                         <DialogHeader>
                           <DialogTitle>Reject resource</DialogTitle>
+                          <DialogDescription>Provide a clear reason so the uploader can correct the issue and resubmit.</DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4 pt-4">
                           <Input placeholder="Reason for rejection" value={reason} onChange={(event) => setReason(event.target.value)} />

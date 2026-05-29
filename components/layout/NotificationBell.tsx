@@ -22,13 +22,16 @@ export function NotificationBell({ initialNotifications, userId }: NotificationB
 
   useEffect(() => {
     let isMounted = true;
-    let unsubscribe: (() => void) | undefined;
+    let channelName = `notifications:${userId}:${Date.now()}`;
+    let supabaseClient: ReturnType<typeof createClient> | null = null;
+    let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
 
     const setup = async () => {
       const token = await getToken({ skipCache: true });
       const supabase = createClient(token ?? undefined);
-      const channel = supabase
-        .channel(`notifications:${userId}`)
+      supabaseClient = supabase;
+      channel = supabase
+        .channel(channelName)
         .on(
           "postgres_changes",
           {
@@ -46,17 +49,16 @@ export function NotificationBell({ initialNotifications, userId }: NotificationB
           }
         )
         .subscribe();
-
-      unsubscribe = () => {
-        channel.unsubscribe();
-      };
     };
 
     void setup();
 
     return () => {
       isMounted = false;
-      unsubscribe?.();
+      if (channel) {
+        void channel.unsubscribe();
+        supabaseClient?.removeChannel(channel);
+      }
     };
   }, [getToken, userId]);
 

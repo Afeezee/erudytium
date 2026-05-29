@@ -4,7 +4,7 @@ import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { Menu } from "lucide-react";
 import { usePathname } from "next/navigation";
-import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { NotificationBell } from "@/components/layout/NotificationBell";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -47,6 +47,10 @@ export function Navbar({ userId, notifications }: NavbarProps) {
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle>Navigation menu</DialogTitle>
+                <DialogDescription>Use these shortcuts to move between the main dashboard sections on smaller screens.</DialogDescription>
+              </DialogHeader>
               <div className="space-y-3 pt-6">
                 {DASHBOARD_NAV.map((item) => (
                   <Link key={item.href} href={item.href} className="block rounded-2xl px-4 py-3 text-sm font-medium transition hover:bg-neutral-100 dark:hover:bg-neutral-900">

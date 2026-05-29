@@ -125,25 +125,34 @@ export const getRoomMessagesQuery = async (supabase: SupabaseClient, roomId: str
 
 export const createRoomQuery = async (
   supabase: SupabaseClient,
-  payload: Omit<StudyRoom, "id" | "created_at" | "creator" | "member_count" | "message_count" | "is_member">
+  payload: Pick<StudyRoom, "id" | "name" | "description" | "topic" | "is_private" | "invite_code" | "created_by" | "exam_date">
 ) => {
-  const { data, error } = await supabase.from("study_rooms").insert(payload).select("*").single<StudyRoom>();
+  const { error } = await supabase.from("study_rooms").insert(payload);
 
   if (error) {
     throw new Error(error.message);
   }
-
-  return data;
 };
 
 export const addRoomMemberQuery = async (
   supabase: SupabaseClient,
   payload: { room_id: string; user_id: string; role?: "owner" | "moderator" | "member" }
 ) => {
-  const { data, error } = await supabase.from("room_members").upsert(payload, { onConflict: "room_id,user_id" }).select("*").single<RoomMember>();
+  const { error } = await supabase.from("room_members").insert(payload);
 
-  if (error) {
+  if (error && error.code !== "23505") {
     throw new Error(error.message);
+  }
+
+  const { data, error: selectError } = await supabase
+    .from("room_members")
+    .select("*")
+    .eq("room_id", payload.room_id)
+    .eq("user_id", payload.user_id)
+    .single<RoomMember>();
+
+  if (selectError) {
+    throw new Error(selectError.message);
   }
 
   return data;

@@ -46,7 +46,10 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
   try {
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
-    const room = await createRoomQuery(supabase, {
+    const roomId = crypto.randomUUID();
+
+    await createRoomQuery(supabase, {
+      id: roomId,
       name: parsed.data.name,
       description: parsed.data.description || null,
       topic: parsed.data.topic,
@@ -55,9 +58,18 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
       created_by: user.id,
       exam_date: parsed.data.examDate || null
     });
-    await addRoomMemberQuery(supabase, { room_id: room.id, user_id: user.id, role: "owner" });
+
+    try {
+      await addRoomMemberQuery(supabase, { room_id: roomId, user_id: user.id, role: "owner" });
+      const room = await getRoomByIdQuery(supabase, roomId);
+      revalidatePath("/dashboard/rooms");
+      return { data: room };
+    } catch (membershipError) {
+      await deleteRoomQuery(supabase, roomId).catch(() => undefined);
+      throw membershipError;
+    }
+
     revalidatePath("/dashboard/rooms");
-    return { data: room };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to create room." };
   }
