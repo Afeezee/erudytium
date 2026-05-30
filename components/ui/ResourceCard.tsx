@@ -14,7 +14,7 @@ import type { Resource } from "@/types";
 interface ResourceCardProps {
   resource?: Resource;
   loading?: boolean;
-  onBookmarkToggle?: (resourceId: string) => Promise<void> | void;
+  onBookmarkToggle?: (resourceId: string) => Promise<unknown> | void;
 }
 
 export function ResourceCard({ resource, loading = false, onBookmarkToggle }: ResourceCardProps) {
@@ -32,7 +32,11 @@ export function ResourceCard({ resource, loading = false, onBookmarkToggle }: Re
         <FileIcon className="h-16 w-16 text-primary" />
         <button
           type="button"
-          onClick={() => startTransition(async () => onBookmarkToggle?.(resource.id))}
+          onClick={() =>
+            startTransition(async () => {
+              await onBookmarkToggle?.(resource.id);
+            })
+          }
           className="absolute right-4 top-4 rounded-full bg-white/90 p-2 text-primary shadow-md transition hover:bg-white"
           disabled={isPending}
         >

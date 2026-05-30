@@ -19,7 +19,7 @@ export default async function BookmarksPage() {
       ) : (
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
           {bookmarks.map((bookmark) => (
-            <ResourceCard key={bookmark.id} resource={bookmark.resource} onBookmarkToggle={async (resourceId) => void toggleBookmark(resourceId)} />
+            <ResourceCard key={bookmark.id} resource={bookmark.resource} onBookmarkToggle={toggleBookmark} />
           ))}
         </div>
       )}

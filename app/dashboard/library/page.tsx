@@ -75,7 +75,7 @@ async function LibraryResults({ searchParams }: { searchParams?: Record<string, 
           <>
             <div className="grid gap-5 md:grid-cols-2 2xl:grid-cols-3">
               {results.data.map((resource) => (
-                <ResourceCard key={resource.id} resource={resource} onBookmarkToggle={async (resourceId) => void toggleBookmark(resourceId)} />
+                <ResourceCard key={resource.id} resource={resource} onBookmarkToggle={toggleBookmark} />
               ))}
             </div>
             <div className="flex items-center justify-between">
