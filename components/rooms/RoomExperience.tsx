@@ -278,7 +278,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             <div className="space-y-4 border-t border-border/70 pt-4">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="font-display text-lg font-semibold">Online members</h3>
-                <Badge variant="secondary">{onlineUserIds.length}/{members.length} online</Badge>
+                <Badge variant="neutral">{onlineUserIds.length}/{members.length} online</Badge>
               </div>
               <div className="space-y-3 xl:max-h-[32rem] xl:overflow-y-auto xl:pr-1">
                 {members.map((member) => {
