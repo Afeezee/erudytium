@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { notificationPreferencesSchema, profileSchema, userAdminUpdateSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
 import { createAuditLogQuery } from "@/lib/supabase/audit";
@@ -92,7 +93,8 @@ export const updateUserRole = async (payload: { userId: string; role: User["role
   try {
     const admin = await requireRole(["admin"]);
     const supabase = await createClient();
-    const user = await updateManagedUserQuery(supabase, parsed.data.userId, {
+    const adminClient = getAdminClient();
+    const user = await updateManagedUserQuery(adminClient, parsed.data.userId, {
       role: parsed.data.role,
       is_active: parsed.data.isActive
     });

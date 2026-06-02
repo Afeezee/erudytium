@@ -9,7 +9,9 @@ interface NotificationEmailPayload {
 }
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = `${APP_NAME} <onboarding@resend.dev>`;
+const DEFAULT_FROM_EMAIL = `${APP_NAME} <onboarding@resend.dev>`;
+
+const getFromEmail = () => process.env.RESEND_FROM_EMAIL ?? DEFAULT_FROM_EMAIL;
 
 const shouldSendEmail = (recipient: User, type: string) => {
   switch (type) {
@@ -35,6 +37,14 @@ const buildSubject = (type: string) => {
       return `${APP_NAME}: Resource rejected`;
     case "resource_request":
       return `${APP_NAME}: Resource request update`;
+    case "announcement_posted":
+      return `${APP_NAME}: New announcement`;
+    case "room_created":
+      return `${APP_NAME}: New study room`;
+    case "room_join":
+      return `${APP_NAME}: Someone joined your room`;
+    case "room_message":
+      return `${APP_NAME}: New room message`;
     case "room_kick":
       return `${APP_NAME}: Room membership changed`;
     case "room_closed":
@@ -69,20 +79,31 @@ export const sendNotificationEmail = async (recipient: User, payload: Notificati
   const absoluteLink = toAbsoluteLink(payload.link);
   const subject = buildSubject(payload.type);
   const greetingName = recipient.name ?? "there";
+  const fromEmail = getFromEmail();
   const plainText = absoluteLink ? `${payload.message}\n\nOpen: ${absoluteLink}` : payload.message;
   const html = absoluteLink
     ? `<p>Hello ${greetingName},</p><p>${payload.message}</p><p><a href="${absoluteLink}">Open in ${APP_NAME}</a></p>`
     : `<p>Hello ${greetingName},</p><p>${payload.message}</p>`;
 
   try {
-    await resend.emails.send({
-      from: FROM_EMAIL,
+    const { error } = await resend.emails.send({
+      from: fromEmail,
       to: recipient.email,
       subject,
       text: plainText,
       html
     });
+
+    if (error) {
+      throw new Error(error.message);
+    }
   } catch (error) {
-    console.error("Failed to send notification email", error);
+    console.error("Failed to send notification email", {
+      recipientId: recipient.id,
+      recipientEmail: recipient.email,
+      type: payload.type,
+      fromEmail,
+      error: error instanceof Error ? error.message : error
+    });
   }
 };

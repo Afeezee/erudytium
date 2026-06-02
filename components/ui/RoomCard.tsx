@@ -53,8 +53,8 @@ export function RoomCard({ room, loading = false, onJoin }: RoomCardProps) {
           <Button asChild className="flex-1">
             <Link href={`/dashboard/rooms/${room.id}`}>Open room</Link>
           </Button>
-          <Button variant="outline" onClick={() => onJoin?.(room.id)}>
-            Join
+          <Button variant="outline" onClick={() => onJoin?.(room.id)} disabled={room.is_member}>
+            {room.is_member ? "Joined" : "Join"}
           </Button>
         </div>
       </CardContent>

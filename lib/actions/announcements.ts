@@ -3,9 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
+import { createNotification } from "@/lib/actions/notifications";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { announcementSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
 import { createAnnouncementQuery, getAnnouncementsQuery } from "@/lib/supabase/announcements";
+import { getActiveUsersQuery } from "@/lib/supabase/users";
 import type { Announcement, ApiResponse } from "@/types";
 
 export const getAnnouncements = async (department?: string): Promise<ApiResponse<Announcement[]>> => {
@@ -33,12 +36,30 @@ export const createAnnouncement = async (formData: FormData): Promise<ApiRespons
     await requireRole(["lecturer", "admin"]);
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
+    const adminClient = getAdminClient();
     const announcement = await createAnnouncementQuery(supabase, {
       author_id: user.id,
       title: parsed.data.title,
       body: parsed.data.body,
       department: parsed.data.department || null
     });
+
+    const recipients = await getActiveUsersQuery(adminClient, {
+      department: announcement.department,
+      excludeUserIds: [user.id]
+    });
+
+    await Promise.all(
+      recipients.map((recipient) =>
+        createNotification(
+          recipient.id,
+          "announcement_posted",
+          `${user.name ?? "A lecturer"} posted a new announcement: ${announcement.title}.`,
+          "/dashboard/announcements"
+        )
+      )
+    );
+
     revalidatePath("/dashboard/announcements");
     revalidatePath("/admin/announcements");
     return { data: announcement };

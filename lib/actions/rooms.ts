@@ -6,6 +6,7 @@ import { getCurrentUserRecord, requireRole } from "@/lib/auth";
 import { roomSchema } from "@/lib/validations";
 import { createAuditLogQuery } from "@/lib/supabase/audit";
 import { createNotification } from "@/lib/actions/notifications";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { parseMentions } from "@/lib/utils";
 import { stripHtml } from "@/lib/utils/sanitize";
 import {
@@ -23,11 +24,29 @@ import {
   updateRoomExamDateQuery,
   updateRoomMemberQuery
 } from "@/lib/supabase/rooms";
+import { getActiveUsersQuery } from "@/lib/supabase/users";
 import { generateInviteCode } from "@/lib/utils";
 import type { ApiResponse, Message, RoomMember, StudyRoom } from "@/types";
 
 const isManager = (members: RoomMember[], userId: string) => members.some((member) => member.user_id === userId && ["owner", "moderator"].includes(member.role));
 const isOwner = (members: RoomMember[], userId: string) => members.some((member) => member.user_id === userId && member.role === "owner");
+const getCurrentMember = (members: RoomMember[], userId: string) => members.find((member) => member.user_id === userId) ?? null;
+
+const normalizeOptionalExamDate = (value: string) => {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  const parsed = new Date(trimmed);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return trimmed;
+  }
+
+  return parsed.toISOString();
+};
 
 export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyRoom>> => {
   const parsed = roomSchema.safeParse({
@@ -35,7 +54,7 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
     topic: stripHtml(String(formData.get("topic") ?? "")),
     description: stripHtml(String(formData.get("description") ?? "")),
     isPrivate: String(formData.get("isPrivate") ?? "false") === "true",
-    examDate: String(formData.get("examDate") ?? "")
+    examDate: normalizeOptionalExamDate(String(formData.get("examDate") ?? ""))
   });
 
   if (!parsed.success) {
@@ -45,6 +64,7 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
   try {
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
+    const adminClient = getAdminClient();
     const roomId = crypto.randomUUID();
 
     await createRoomQuery(supabase, {
@@ -61,6 +81,25 @@ export const createRoom = async (formData: FormData): Promise<ApiResponse<StudyR
     try {
       await addRoomMemberQuery(supabase, { room_id: roomId, user_id: user.id, role: "owner" });
       const room = await getRoomByIdQuery(supabase, roomId);
+
+      if (!room.is_private) {
+        const recipients = await getActiveUsersQuery(adminClient, {
+          department: user.department,
+          excludeUserIds: [user.id]
+        });
+
+        await Promise.all(
+          recipients.map((recipient) =>
+            createNotification(
+              recipient.id,
+              "room_created",
+              `${user.name ?? "A classmate"} created a new study room: ${room.name}.`,
+              `/dashboard/rooms/${room.id}`
+            )
+          )
+        );
+      }
+
       revalidatePath("/dashboard/rooms");
       return { data: room };
     } catch (membershipError) {
@@ -76,7 +115,23 @@ export const joinRoom = async (roomId: string): Promise<ApiResponse<RoomMember>>
   try {
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
+    const room = await getRoomByIdQuery(supabase, roomId);
+
+    if (room.is_private) {
+      return { error: "Use an invite code to join this private room." };
+    }
+
     const membership = await addRoomMemberQuery(supabase, { room_id: roomId, user_id: user.id });
+
+    if (room.created_by && room.created_by !== user.id) {
+      await createNotification(
+        room.created_by,
+        "room_join",
+        `${user.name ?? user.email} joined your study room ${room.name}.`,
+        `/dashboard/rooms/${roomId}`
+      );
+    }
+
     revalidatePath(`/dashboard/rooms/${roomId}`);
     revalidatePath("/dashboard/rooms");
     return { data: membership };
@@ -89,8 +144,18 @@ export const joinRoomByCode = async (inviteCode: string): Promise<ApiResponse<St
   try {
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
-    const room = await findRoomByInviteCodeQuery(supabase, inviteCode);
+    const room = await findRoomByInviteCodeQuery(supabase, inviteCode.trim().toUpperCase());
     await addRoomMemberQuery(supabase, { room_id: room.id, user_id: user.id });
+
+    if (room.created_by && room.created_by !== user.id) {
+      await createNotification(
+        room.created_by,
+        "room_join",
+        `${user.name ?? user.email} joined your study room ${room.name}.`,
+        `/dashboard/rooms/${room.id}`
+      );
+    }
+
     revalidatePath("/dashboard/rooms");
     return { data: room };
   } catch (error) {
@@ -114,23 +179,45 @@ export const sendMessage = async (roomId: string, content: string, fileUrl?: str
   try {
     const user = await getCurrentUserRecord();
     const supabase = await createClient();
+    const members = await getRoomMembersQuery(supabase, roomId);
+    const currentMember = getCurrentMember(members, user.id);
+
+    if (!currentMember) {
+      return { error: "Join the room before sending messages." };
+    }
+
+    if (currentMember.is_muted) {
+      return { error: "You are muted in this room." };
+    }
+
     const message = await insertMessageQuery(supabase, {
       room_id: roomId,
       user_id: user.id,
       content: stripHtml(content),
       file_url: fileUrl ? stripHtml(fileUrl) : null
     });
-    const members = await getRoomMembersQuery(supabase, roomId);
+    const room = await getRoomByIdQuery(supabase, roomId);
     const mentions = parseMentions(content);
     const mentionedMembers = members.filter((member) => {
       const candidate = member.user?.name?.toLowerCase().replace(/\s+/g, "") ?? "";
       return mentions.includes(candidate) && member.user_id !== user.id;
     });
+    const mentionedIds = new Set(mentionedMembers.map((member) => member.user_id));
+    const otherRecipients = members.filter((member) => member.user_id !== user.id && !mentionedIds.has(member.user_id));
+    const messagePreview = stripHtml(content).trim();
+    const summary = messagePreview
+      ? `${user.name ?? "A classmate"} sent a message in ${room.name}: ${messagePreview.slice(0, 120)}${messagePreview.length > 120 ? "..." : ""}`
+      : `${user.name ?? "A classmate"} shared a new attachment in ${room.name}.`;
 
     await Promise.all(
-      mentionedMembers.map((member) =>
-        createNotification(member.user_id, "mention", `${user.name ?? "A classmate"} mentioned you in ${message.room_id}.`, `/dashboard/rooms/${roomId}`)
-      )
+      [
+        ...mentionedMembers.map((member) =>
+          createNotification(member.user_id, "mention", `${user.name ?? "A classmate"} mentioned you in ${room.name}.`, `/dashboard/rooms/${roomId}`)
+        ),
+        ...otherRecipients.map((member) =>
+          createNotification(member.user_id, "room_message", summary, `/dashboard/rooms/${roomId}`)
+        )
+      ]
     );
     revalidatePath(`/dashboard/rooms/${roomId}`);
     return { data: message };
@@ -247,6 +334,13 @@ export const promoteToModerator = async (roomId: string, userId: string): Promis
 };
 
 export const updateExamDate = async (roomId: string, examDate: string): Promise<ApiResponse<StudyRoom>> => {
+  const normalizedExamDate = normalizeOptionalExamDate(examDate);
+  const parsedExamDate = roomSchema.shape.examDate.safeParse(normalizedExamDate);
+
+  if (!parsedExamDate.success) {
+    return { error: "Invalid exam date." };
+  }
+
   try {
     const currentUser = await getCurrentUserRecord();
     const supabase = await createClient();
@@ -256,7 +350,7 @@ export const updateExamDate = async (roomId: string, examDate: string): Promise<
       return { error: "Only the room owner can update the exam date." };
     }
 
-    const updated = await updateRoomExamDateQuery(supabase, roomId, examDate || null);
+    const updated = await updateRoomExamDateQuery(supabase, roomId, parsedExamDate.data || null);
     revalidatePath(`/dashboard/rooms/${roomId}`);
     return { data: updated };
   } catch (error) {

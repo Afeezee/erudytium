@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -16,8 +17,36 @@ interface UsersTableProps {
 
 export function UsersTable({ users }: UsersTableProps) {
   const [query, setQuery] = useState("");
+  const [rows, setRows] = useState(users);
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const filtered = users.filter((user) => {
+
+  useEffect(() => {
+    setRows(users);
+  }, [users]);
+
+  const applyUserUpdate = (user: User, updates: { role: User["role"]; isActive: boolean }) => {
+    startTransition(async () => {
+      setPendingUserId(user.id);
+
+      try {
+        const result = await updateUserRole({ userId: user.id, role: updates.role, isActive: updates.isActive });
+
+        if (result.error || !result.data) {
+          toast.error(result.error ?? "Unable to update user.");
+          return;
+        }
+
+        const updatedUser = result.data;
+        setRows((current) => current.map((entry) => (entry.id === user.id ? updatedUser : entry)));
+        toast.success("User updated.");
+      } finally {
+        setPendingUserId((current) => (current === user.id ? null : current));
+      }
+    });
+  };
+
+  const filtered = rows.filter((user) => {
     const haystack = `${user.name ?? ""} ${user.email}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
@@ -35,7 +64,10 @@ export function UsersTable({ users }: UsersTableProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {filtered.map((user) => (
+          {filtered.map((user) => {
+            const isUpdatingUser = isPending && pendingUserId === user.id;
+
+            return (
             <TableRow key={user.id}>
               <TableCell>
                 <div className="flex items-center gap-3">
@@ -52,8 +84,8 @@ export function UsersTable({ users }: UsersTableProps) {
               <TableCell>
                 <div className="flex items-center gap-3">
                   <Badge>{user.role}</Badge>
-                  <Select defaultValue={user.role} onValueChange={(value) => startTransition(async () => void updateUserRole({ userId: user.id, role: value as User["role"], isActive: user.is_active }))}>
-                    <SelectTrigger className="w-[180px]">
+                  <Select value={user.role} onValueChange={(value) => applyUserUpdate(user, { role: value as User["role"], isActive: user.is_active })}>
+                    <SelectTrigger className="w-[180px]" disabled={isUpdatingUser}>
                       <SelectValue placeholder="Role" />
                     </SelectTrigger>
                     <SelectContent>
@@ -66,13 +98,13 @@ export function UsersTable({ users }: UsersTableProps) {
               </TableCell>
               <TableCell>
                 <div className="flex items-center gap-3">
-                  <Switch checked={user.is_active} onCheckedChange={(checked) => startTransition(async () => void updateUserRole({ userId: user.id, role: user.role, isActive: checked }))} disabled={isPending} />
-                  <span>{user.is_active ? "Active" : "Inactive"}</span>
+                  <Switch checked={user.is_active} onCheckedChange={(checked) => applyUserUpdate(user, { role: user.role, isActive: checked })} disabled={isUpdatingUser} />
+                  <span>{isUpdatingUser ? "Saving..." : user.is_active ? "Active" : "Inactive"}</span>
                 </div>
               </TableCell>
               <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
             </TableRow>
-          ))}
+          );})}
         </TableBody>
       </Table>
     </div>

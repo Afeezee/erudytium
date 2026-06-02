@@ -3,6 +3,7 @@
 import DOMPurify from "dompurify";
 import { Crown, Loader2, Paperclip, Pin, Shield, SmilePlus, UserMinus, UserRoundCheck, VolumeX } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -15,7 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { deleteMessage, getOlderMessages, kickMember, leaveRoom, muteMember, pinMessage, promoteToModerator, sendMessage } from "@/lib/actions/rooms";
+import { deleteMessage, getOlderMessages, joinRoom, kickMember, leaveRoom, muteMember, pinMessage, promoteToModerator, sendMessage } from "@/lib/actions/rooms";
 import { formatRelativeTime } from "@/lib/utils";
 import type { Message, Resource, RoomMember, StudyRoom, User } from "@/types";
 
@@ -31,6 +32,7 @@ const EMOJIS = ["😀", "🔥", "📚", "✅", "🧠", "💡", "🎯", "📝"];
 
 export function RoomExperience({ room, currentUser, members, messages: initialMessages, shareableResources }: RoomExperienceProps) {
   const { getToken } = useAuth();
+  const router = useRouter();
   const [messages, setMessages] = useState(initialMessages);
   const [draft, setDraft] = useState("");
   const [typingUser, setTypingUser] = useState<string | null>(null);
@@ -41,6 +43,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null);
   const [shareQuery, setShareQuery] = useState("");
+  const [countdownNow, setCountdownNow] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
   const [mentionIndex, setMentionIndex] = useState(0);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
@@ -50,6 +53,8 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const currentMember = members.find((member) => member.user_id === currentUser.id);
   const isManager = currentMember ? ["owner", "moderator"].includes(currentMember.role) : false;
   const isOwner = currentMember?.role === "owner";
+  const canParticipate = Boolean(currentMember);
+  const isMuted = currentMember?.is_muted ?? false;
   const pinnedMessages = messages.filter((message) => message.is_pinned);
 
   const mentionQuery = draft.split(/\s/).pop()?.startsWith("@") ? draft.split(/\s/).pop()?.slice(1).toLowerCase() ?? "" : "";
@@ -69,12 +74,22 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   }, [timerRunning]);
 
   useEffect(() => {
+    setCountdownNow(Date.now());
+    const interval = window.setInterval(() => setCountdownNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
     viewport.scrollTop = viewport.scrollHeight;
   }, []);
 
   useEffect(() => {
+    if (!canParticipate) {
+      return;
+    }
+
     let isMounted = true;
     let supabaseClient: ReturnType<typeof createClient> | null = null;
     let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
@@ -156,20 +171,30 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
         supabaseClient?.removeChannel(channel);
       }
     };
-  }, [currentUser.email, currentUser.id, currentUser.name, getToken, room.id]);
+  }, [canParticipate, currentUser.email, currentUser.id, currentUser.name, getToken, room.id]);
 
   const examCountdown = useMemo(() => {
-    if (!room.exam_date) return null;
-    const diff = new Date(room.exam_date).getTime() - Date.now();
+    if (!room.exam_date || countdownNow === null) return null;
+    const diff = new Date(room.exam_date).getTime() - countdownNow;
     if (diff <= 0) return "Exam time";
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
     const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
     const minutes = Math.floor((diff / (1000 * 60)) % 60);
     const seconds = Math.floor((diff / 1000) % 60);
     return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-  }, [room.exam_date, messages.length, studySeconds]);
+  }, [countdownNow, room.exam_date]);
 
   const sendCurrentMessage = () => {
+    if (!canParticipate) {
+      toast.error("Join the room before sending messages.");
+      return;
+    }
+
+    if (isMuted) {
+      toast.error("You are muted in this room.");
+      return;
+    }
+
     if (!draft.trim() && !attachmentUrl) return;
 
     startTransition(async () => {
@@ -190,6 +215,11 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   };
 
   const uploadAttachment = async (file: File) => {
+    if (!canParticipate || isMuted) {
+      toast.error(canParticipate ? "You are muted in this room." : "Join the room before sharing attachments.");
+      return;
+    }
+
     setAttachmentUploading(true);
     const token = await getToken({ skipCache: true });
     const supabase = createClient(token ?? undefined);
@@ -208,6 +238,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   };
 
   const handleTyping = () => {
+    if (!canParticipate || isMuted) {
+      return;
+    }
+
     channelRef.current?.send({
       type: "broadcast",
       event: "typing",
@@ -216,8 +250,8 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)_300px]">
-      <div className="space-y-6">
+    <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
+      <div className="order-2 space-y-6 xl:order-1">
         <Card>
           <CardContent className="space-y-4 pt-6">
             <h2 className="font-display text-xl font-semibold">Pinned messages</h2>
@@ -240,11 +274,57 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
               <Button variant="ghost" onClick={() => setStudySeconds(0)}>Reset</Button>
             </div>
             {examCountdown ? <div className="rounded-2xl bg-warning/10 p-4 text-sm text-warning">Exam countdown: {examCountdown}</div> : null}
+
+            <div className="space-y-4 border-t border-border/70 pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-display text-lg font-semibold">Online members</h3>
+                <Badge variant="secondary">{onlineUserIds.length}/{members.length} online</Badge>
+              </div>
+              <div className="space-y-3 xl:max-h-[32rem] xl:overflow-y-auto xl:pr-1">
+                {members.map((member) => {
+                  const isOnline = onlineUserIds.includes(member.user_id);
+
+                  return (
+                    <div key={member.id} className="flex items-center justify-between gap-3 rounded-2xl border border-border p-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="relative shrink-0">
+                          <Avatar>
+                            <AvatarImage src={member.user?.avatar_url ?? undefined} alt={member.user?.name ?? "Member"} />
+                            <AvatarFallback>{member.user?.name?.slice(0, 1) ?? "M"}</AvatarFallback>
+                          </Avatar>
+                          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${isOnline ? "bg-success" : "bg-neutral-400"}`} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 font-medium">
+                            <span className="truncate">{member.user?.name ?? "Member"}</span>
+                            {member.role === "owner" ? <Crown className="h-4 w-4 text-warning" /> : null}
+                            {member.role === "moderator" ? <Shield className="h-4 w-4 text-accent" /> : null}
+                          </div>
+                          <p className="text-xs text-neutral-500">{isOnline ? "Online" : "Offline"}</p>
+                        </div>
+                      </div>
+                      {isManager && member.user_id !== currentUser.id ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="shrink-0">•••</Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => void muteMember(room.id, member.user_id)}><VolumeX className="mr-2 h-4 w-4" />{member.is_muted ? "Unmute" : "Mute"}</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => void kickMember(room.id, member.user_id)}><UserMinus className="mr-2 h-4 w-4" />Kick</DropdownMenuItem>
+                            {isOwner && member.role === "member" ? <DropdownMenuItem onClick={() => void promoteToModerator(room.id, member.user_id)}><UserRoundCheck className="mr-2 h-4 w-4" />Promote to moderator</DropdownMenuItem> : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      <div className="space-y-4">
+      <div className="order-1 space-y-4 xl:order-2">
         <Card>
           <CardContent className="flex flex-col gap-4 pt-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -257,14 +337,48 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
               </div>
               <div className="flex gap-3">
                 {isOwner && room.invite_code ? <Button variant="outline" onClick={() => navigator.clipboard.writeText(`${window.location.origin}/dashboard/rooms/${room.id}?code=${room.invite_code}`)}>Share invite code</Button> : null}
-                <Button variant="ghost" onClick={async () => { await leaveRoom(room.id); window.location.href = "/dashboard/rooms"; }}>Leave room</Button>
+                {canParticipate ? (
+                  <Button variant="ghost" onClick={async () => { await leaveRoom(room.id); window.location.href = "/dashboard/rooms"; }}>Leave room</Button>
+                ) : !room.is_private ? (
+                  <Button
+                    onClick={() =>
+                      startTransition(async () => {
+                        const result = await joinRoom(room.id);
+
+                        if (result.error) {
+                          toast.error(result.error);
+                          return;
+                        }
+
+                        router.refresh();
+                      })
+                    }
+                    disabled={isPending}
+                  >
+                    {isPending ? "Joining..." : "Join room"}
+                  </Button>
+                ) : null}
               </div>
             </div>
 
-            <ScrollArea className="h-[62vh] rounded-[2rem] border border-border bg-white/50 dark:bg-neutral-950/40">
+            {!canParticipate ? (
+              <div className="rounded-2xl border border-border bg-warning/10 px-4 py-3 text-sm text-neutral-700 dark:text-neutral-200">
+                <p className="font-semibold text-foreground">Preview mode</p>
+                <p className="mt-1">Join this public room to send messages, share files, appear online, and use live collaboration tools.</p>
+              </div>
+            ) : null}
+
+            {isMuted ? (
+              <div className="rounded-2xl border border-border bg-warning/10 px-4 py-3 text-sm text-neutral-700 dark:text-neutral-200">
+                <p className="font-semibold text-foreground">Messaging paused</p>
+                <p className="mt-1">You are muted in this room. You can still read messages, but sending is disabled until a manager unmutes you.</p>
+              </div>
+            ) : null}
+
+            <ScrollArea className="h-[50vh] rounded-[2rem] border border-border bg-white/50 md:h-[58vh] xl:h-[68vh] dark:bg-neutral-950/40">
               <div
                 ref={scrollViewportRef}
-                className="h-[62vh] space-y-4 overflow-y-auto p-4"
+                className="h-[50vh] space-y-4 overflow-y-auto p-4 md:h-[58vh] xl:h-[68vh]"
                 onScroll={async (event) => {
                   const viewport = event.currentTarget;
                   setShowScrollToBottom(viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 220);
@@ -351,8 +465,9 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                 value={draft}
                 rows={1}
                 maxLength={4000}
+                disabled={!canParticipate || isMuted || isPending}
                 className="max-h-40 min-h-[52px] w-full resize-none bg-transparent text-sm outline-none"
-                placeholder="Type a message, use @ to mention a member, Shift+Enter for a new line"
+                placeholder={!canParticipate ? "Join the room to participate in chat" : isMuted ? "You are muted in this room" : "Type a message, use @ to mention a member, Shift+Enter for a new line"}
                 onChange={(event) => {
                   setDraft(event.target.value);
                   handleTyping();
@@ -421,55 +536,8 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     </DialogContent>
                   </Dialog>
                 </div>
-                <Button onClick={sendCurrentMessage} disabled={isPending}>Send</Button>
+                <Button onClick={sendCurrentMessage} disabled={isPending || !canParticipate || isMuted}>Send</Button>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="space-y-6">
-        <Card>
-          <CardContent className="space-y-4 pt-6">
-            <h2 className="font-display text-xl font-semibold">Online members</h2>
-            <div className="space-y-3">
-              {members.map((member) => {
-                const isOnline = onlineUserIds.includes(member.user_id);
-
-                return (
-                  <div key={member.id} className="flex items-center justify-between gap-3 rounded-2xl border border-border p-3">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <Avatar>
-                          <AvatarImage src={member.user?.avatar_url ?? undefined} alt={member.user?.name ?? "Member"} />
-                          <AvatarFallback>{member.user?.name?.slice(0, 1) ?? "M"}</AvatarFallback>
-                        </Avatar>
-                        <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${isOnline ? "bg-success" : "bg-neutral-400"}`} />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2 font-medium">
-                          <span>{member.user?.name ?? "Member"}</span>
-                          {member.role === "owner" ? <Crown className="h-4 w-4 text-warning" /> : null}
-                          {member.role === "moderator" ? <Shield className="h-4 w-4 text-accent" /> : null}
-                        </div>
-                        <p className="text-xs text-neutral-500">{isOnline ? "Online" : "Offline"}</p>
-                      </div>
-                    </div>
-                    {isManager && member.user_id !== currentUser.id ? (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">•••</Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => void muteMember(room.id, member.user_id)}><VolumeX className="mr-2 h-4 w-4" />{member.is_muted ? "Unmute" : "Mute"}</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void kickMember(room.id, member.user_id)}><UserMinus className="mr-2 h-4 w-4" />Kick</DropdownMenuItem>
-                          {isOwner && member.role === "member" ? <DropdownMenuItem onClick={() => void promoteToModerator(room.id, member.user_id)}><UserRoundCheck className="mr-2 h-4 w-4" />Promote to moderator</DropdownMenuItem> : null}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    ) : null}
-                  </div>
-                );
-              })}
             </div>
           </CardContent>
         </Card>

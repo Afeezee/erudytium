@@ -80,7 +80,10 @@ npm test
 | CLERK_SECRET_KEY | Clerk secret key |
 | CLERK_WEBHOOK_SECRET | Svix secret for Clerk webhook verification and user profile sync |
 | RESEND_API_KEY | Resend API key for outbound email delivery |
+| RESEND_FROM_EMAIL | Verified sender address used for outbound emails, for example `notifications@yourdomain.com` |
 | NEXT_PUBLIC_APP_URL | Public application base URL |
+
+Resend note: `onboarding@resend.dev` is only suitable for limited testing. To deliver announcement and notification emails to real users, add and verify a sending domain in Resend and set `RESEND_FROM_EMAIL`.
 
 ## Folder Structure
 

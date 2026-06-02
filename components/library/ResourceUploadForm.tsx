@@ -112,7 +112,7 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
                       <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
                     ))
                   ) : (
-                    <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">No categories available yet.</div>
+                    <SelectItem disabled value="__no_categories__">No categories available yet.</SelectItem>
                   )}
                 </SelectContent>
               </Select>
@@ -151,7 +151,13 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
             }}
             maxSize={50 * 1024 * 1024}
             file={file}
-            onFileSelect={setFile}
+            onFileSelect={(selectedFile) => {
+              setFile(selectedFile);
+
+              if (selectedFile) {
+                setError(null);
+              }
+            }}
             uploadProgress={progress}
             error={error}
             success={Boolean(file) && !error}

@@ -8,6 +8,7 @@ const fullEnvSchema = z.object({
   CLERK_SECRET_KEY: z.string().min(1),
   CLERK_WEBHOOK_SECRET: z.string().min(1),
   RESEND_API_KEY: z.string().min(1),
+  RESEND_FROM_EMAIL: z.string().email().optional(),
   NEXT_PUBLIC_APP_URL: z.string().url()
 });
 
@@ -41,6 +42,7 @@ export const getEnv = (): Env => {
     CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
     CLERK_WEBHOOK_SECRET: process.env.CLERK_WEBHOOK_SECRET,
     RESEND_API_KEY: process.env.RESEND_API_KEY,
+    RESEND_FROM_EMAIL: process.env.RESEND_FROM_EMAIL,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL
   });
 

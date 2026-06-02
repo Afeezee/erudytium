@@ -53,6 +53,26 @@ export const getAllUsersQuery = async (supabase: SupabaseClient, search?: string
   return (data ?? []) as User[];
 };
 
+export const getActiveUsersQuery = async (
+  supabase: SupabaseClient,
+  options?: { department?: string | null; excludeUserIds?: string[] }
+) => {
+  let query = supabase.from("users").select("*").eq("is_active", true).order("created_at", { ascending: false });
+
+  if (options?.department) {
+    query = query.eq("department", options.department);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const excludedIds = new Set(options?.excludeUserIds ?? []);
+  return ((data ?? []) as User[]).filter((user) => !excludedIds.has(user.id));
+};
+
 export const updateUserProfileQuery = async (
   supabase: SupabaseClient,
   userId: string,

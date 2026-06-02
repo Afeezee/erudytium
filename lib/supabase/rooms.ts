@@ -1,7 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Message, RoomMember, StudyRoom } from "@/types";
 
-export const listRoomsQuery = async (supabase: SupabaseClient, search?: string) => {
+const getRelationCount = (relation: unknown) => {
+  if (Array.isArray(relation)) {
+    return relation[0]?.count ?? 0;
+  }
+
+  if (relation && typeof relation === "object" && "count" in relation) {
+    return Number((relation as { count?: number }).count ?? 0);
+  }
+
+  return 0;
+};
+
+export const listRoomsQuery = async (supabase: SupabaseClient, search?: string, options?: { publicOnly?: boolean }) => {
   let query = supabase
     .from("study_rooms")
     .select(
@@ -13,6 +25,10 @@ export const listRoomsQuery = async (supabase: SupabaseClient, search?: string) 
       `
     )
     .order("created_at", { ascending: false });
+
+  if (options?.publicOnly) {
+    query = query.eq("is_private", false);
+  }
 
   if (search) {
     query = query.or(`name.ilike.%${search}%,topic.ilike.%${search}%`);
@@ -26,8 +42,8 @@ export const listRoomsQuery = async (supabase: SupabaseClient, search?: string) 
 
   return ((data ?? []) as unknown as (StudyRoom & { room_members: { count: number }[]; messages: { count: number }[] })[]).map((room) => ({
     ...room,
-    member_count: room.room_members?.[0]?.count ?? 0,
-    message_count: room.messages?.[0]?.count ?? 0
+    member_count: getRelationCount(room.room_members),
+    message_count: getRelationCount(room.messages)
   }));
 };
 
@@ -61,8 +77,8 @@ export const listMyRoomsQuery = async (supabase: SupabaseClient, userId: string)
     return [
       {
         ...room,
-        member_count: room.room_members?.[0]?.count ?? 0,
-        message_count: room.messages?.[0]?.count ?? 0,
+        member_count: getRelationCount(room.room_members),
+        message_count: getRelationCount(room.messages),
         is_member: true
       }
     ];
