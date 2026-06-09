@@ -311,7 +311,11 @@ export const deleteMessage = async (messageId: string): Promise<ApiResponse<null
     }
 
     if (data.user_id !== user.id) {
-      return { error: "You can only delete your own messages." };
+      const members = await getRoomMembersQuery(supabase, data.room_id);
+
+      if (!isManager(members, user.id)) {
+        return { error: "You do not have permission to delete this message." };
+      }
     }
 
     await deleteMessageQuery(supabase, messageId);

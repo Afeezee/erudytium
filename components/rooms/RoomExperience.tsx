@@ -1,7 +1,7 @@
 "use client";
 
 import DOMPurify from "dompurify";
-import { Crown, Loader2, Paperclip, Pin, Shield, SmilePlus, UserMinus, UserRoundCheck, VolumeX } from "lucide-react";
+import { Crown, Loader2, MoreHorizontal, Paperclip, Pin, Shield, SmilePlus, UserMinus, UserRoundCheck, VolumeX } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
@@ -87,6 +87,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null);
+  const [isEmojiDialogOpen, setIsEmojiDialogOpen] = useState(false);
   const [shareQuery, setShareQuery] = useState("");
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState<number | null>(null);
@@ -127,6 +128,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
 
   const upsertMessages = (incomingMessages: Message[]) => {
     setMessages((current) => mergeMessages(current, incomingMessages.map((message) => ({ ...message, user: resolveMessageUser(message) }))));
+  };
+
+  const removeMessageFromState = (messageId: string) => {
+    setMessages((current) => current.filter((message) => message.id !== messageId));
   };
 
   useEffect(() => {
@@ -198,6 +203,42 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             const viewport = scrollViewportRef.current;
             if (viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 140) {
               viewport.scrollTop = viewport.scrollHeight;
+            }
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "messages",
+            filter: `room_id=eq.${room.id}`
+          },
+          (payload) => {
+            if (!isMounted) {
+              return;
+            }
+
+            upsertMessages([payload.new as Message]);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "DELETE",
+            schema: "public",
+            table: "messages",
+            filter: `room_id=eq.${room.id}`
+          },
+          (payload) => {
+            if (!isMounted) {
+              return;
+            }
+
+            const deletedMessageId = (payload.old as Pick<Message, "id"> | null)?.id;
+
+            if (deletedMessageId) {
+              removeMessageFromState(deletedMessageId);
             }
           }
         )
@@ -273,6 +314,28 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight;
     }
+  };
+
+  const handleTogglePin = async (message: Message) => {
+    const result = await pinMessage(message.id);
+
+    if (result.error || !result.data) {
+      toast.error(result.error ?? "Unable to update pin status.");
+      return;
+    }
+
+    upsertMessages([{ ...result.data, user: message.user ?? result.data.user ?? null }]);
+  };
+
+  const handleDeleteMessage = async (message: Message) => {
+    const result = await deleteMessage(message.id);
+
+    if (result.error) {
+      toast.error(result.error);
+      return;
+    }
+
+    removeMessageFromState(message.id);
   };
 
   const sendCurrentMessage = () => {
@@ -500,6 +563,9 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                 {messages.map((message, index) => {
                   const previous = messages[index - 1];
                   const grouped = previous?.user_id === message.user_id;
+                  const canPinMessage = isManager;
+                  const canDeleteMessage = isManager || message.user_id === currentUser.id;
+                  const hasMessageActions = canPinMessage || canDeleteMessage;
 
                   return (
                     <div key={message.id} id={`message-${message.id}`} className="group flex items-start gap-3" onContextMenu={(event) => event.preventDefault()}>
@@ -524,15 +590,27 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                         <p className="whitespace-pre-wrap break-words text-sm leading-6 text-neutral-700 dark:text-neutral-200">{renderMessageContent(message.content)}</p>
                         {message.file_url ? <a href={message.file_url} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent">Open attachment</a> : null}
                       </div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button type="button" className="opacity-0 transition group-hover:opacity-100">•••</button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          {isManager ? <DropdownMenuItem onClick={() => void pinMessage(message.id)}>{message.is_pinned ? "Unpin message" : "Pin message"}</DropdownMenuItem> : null}
-                          {message.user_id === currentUser.id ? <DropdownMenuItem onClick={() => void deleteMessage(message.id)}>Delete message</DropdownMenuItem> : null}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      {hasMessageActions ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100"
+                              aria-label="Message actions"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            {canPinMessage ? <DropdownMenuItem onClick={() => void handleTogglePin(message)}>{message.is_pinned ? "Unpin message" : "Pin message"}</DropdownMenuItem> : null}
+                            {canDeleteMessage ? <DropdownMenuItem onClick={() => void handleDeleteMessage(message)}>Delete message</DropdownMenuItem> : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : (
+                        <div className="w-10 shrink-0" aria-hidden="true" />
+                      )}
                     </div>
                   );
                 })}
@@ -595,9 +673,9 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                   <Button variant="ghost" size="icon" onClick={() => document.getElementById("room-attachment")?.click()} disabled={attachmentUploading}>
                     {attachmentUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
                   </Button>
-                  <Dialog>
+                  <Dialog open={isEmojiDialogOpen} onOpenChange={setIsEmojiDialogOpen}>
                     <DialogTrigger asChild>
-                      <Button variant="ghost" size="icon"><SmilePlus className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon" aria-label="Open emoji picker"><SmilePlus className="h-4 w-4" /></Button>
                     </DialogTrigger>
                     <DialogContent className="max-w-sm">
                       <DialogHeader>
@@ -606,7 +684,16 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                       </DialogHeader>
                       <div className="grid grid-cols-4 gap-3 pt-4">
                         {EMOJIS.map((emoji) => (
-                          <button key={emoji} type="button" className="rounded-2xl bg-neutral-100 p-4 text-2xl dark:bg-neutral-900" onClick={() => setDraft((current) => `${current}${emoji}`)}>
+                          <button
+                            key={emoji}
+                            type="button"
+                            className="rounded-2xl bg-neutral-100 p-4 text-2xl dark:bg-neutral-900"
+                            onClick={() => {
+                              setDraft((current) => `${current}${emoji}`);
+                              setIsEmojiDialogOpen(false);
+                              focusComposer();
+                            }}
+                          >
                             {emoji}
                           </button>
                         ))}
