@@ -11,19 +11,17 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TagInput } from "@/components/ui/TagInput";
 import { Textarea } from "@/components/ui/textarea";
-import { RESOURCE_RESTRICTIONS } from "@/lib/constants";
-import { uploadResource } from "@/lib/actions/resources";
+import { cancelResourceUpload, createResourceUploadUrl, finalizeResourceUpload } from "@/lib/actions/resources";
+import { MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET, RESOURCE_RESTRICTIONS } from "@/lib/constants";
+import { createClient } from "@/lib/supabase/client";
+import { resourceUploadSchema } from "@/lib/validations";
+import { formatFileSize } from "@/lib/utils";
 import type { Category } from "@/types";
 import { z } from "zod";
 
-const uploadSchema = z.object({
-  title: z.string().min(3),
-  description: z.string().min(10),
-  categoryId: z.string().uuid().optional().or(z.literal("")),
-  restrictedTo: z.enum(["all", "lecturers_only", "final_year_only"])
-});
+const resourceUploadLimitLabel = formatFileSize(MAX_RESOURCE_UPLOAD_BYTES);
 
-type UploadValues = z.infer<typeof uploadSchema>;
+type UploadValues = z.infer<typeof resourceUploadSchema>;
 
 export function ResourceUploadForm({ categories }: { categories: Category[] }) {
   const hasCategories = categories.length > 0;
@@ -33,7 +31,7 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const form = useForm<UploadValues>({
-    resolver: zodResolver(uploadSchema),
+    resolver: zodResolver(resourceUploadSchema),
     defaultValues: {
       title: "",
       description: "",
@@ -51,15 +49,41 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
           return;
         }
 
+        if (file.size > MAX_RESOURCE_UPLOAD_BYTES) {
+          setError(`This file is ${formatFileSize(file.size)}. The upload limit is ${resourceUploadLimitLabel}.`);
+          return;
+        }
+
         startTransition(async () => {
-          let timer: number | undefined;
+          let uploadPath: string | null = null;
+          let uploadedToStorage = false;
 
           try {
             setError(null);
             setProgress(10);
-            timer = window.setInterval(() => {
-              setProgress((current) => (typeof current === "number" && current < 90 ? current + 10 : current));
-            }, 180);
+            const uploadTarget = await createResourceUploadUrl(file.name);
+
+            if (uploadTarget.error || !uploadTarget.data) {
+              setError(uploadTarget.error ?? "Unable to prepare file upload right now. Please try again.");
+              return;
+            }
+
+            uploadPath = uploadTarget.data.path;
+            setProgress(35);
+
+            const supabase = createClient();
+            const { error: uploadError } = await supabase.storage.from(RESOURCE_BUCKET).uploadToSignedUrl(uploadTarget.data.path, uploadTarget.data.token, file, {
+              contentType: file.type || undefined
+            });
+
+            if (uploadError) {
+              await cancelResourceUpload(uploadTarget.data.path);
+              setError(uploadError.message);
+              return;
+            }
+
+            uploadedToStorage = true;
+            setProgress(80);
 
             const formData = new FormData();
             formData.set("title", values.title);
@@ -67,9 +91,10 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
             formData.set("categoryId", values.categoryId ?? "");
             formData.set("restrictedTo", values.restrictedTo);
             formData.set("tags", tags.join(","));
-            formData.set("file", file);
+            formData.set("filePath", uploadTarget.data.path);
+            formData.set("fileSize", String(file.size));
 
-            const result = await uploadResource(formData);
+            const result = await finalizeResourceUpload(formData);
 
             if (result?.error) {
               setError(result.error);
@@ -89,14 +114,15 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
               categoryId: categories[0]?.id ?? "",
               restrictedTo: "all"
             });
+            setProgress(100);
             toast.success("Your resource has been submitted for review");
           } catch (submissionError) {
-            setError(submissionError instanceof Error ? submissionError.message : "Unable to upload resource right now. Please try again.");
-          } finally {
-            if (typeof timer === "number") {
-              window.clearInterval(timer);
+            if (uploadPath && !uploadedToStorage) {
+              await cancelResourceUpload(uploadPath);
             }
 
+            setError(submissionError instanceof Error ? submissionError.message : "Unable to upload resource right now. Please try again.");
+          } finally {
             setProgress(undefined);
           }
         });
@@ -164,21 +190,18 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
               "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
               "application/epub+zip": [".epub"]
             }}
-            maxSize={50 * 1024 * 1024}
+            maxSize={MAX_RESOURCE_UPLOAD_BYTES}
             file={file}
-            onFileSelect={(selectedFile) => {
+            onFileSelect={(selectedFile, selectionError) => {
               setFile(selectedFile);
-
-              if (selectedFile) {
-                setError(null);
-              }
+              setError(selectionError ?? null);
             }}
             uploadProgress={progress}
             error={error}
             success={Boolean(file) && !error}
           />
           <div className="rounded-3xl bg-neutral-100/80 p-5 text-sm leading-6 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
-            Files are scanned server-side for MIME integrity with file-type and submitted with a pending status for moderation.
+            Files upload directly to storage, are scanned server-side for MIME integrity, and are submitted with a pending status for moderation. Maximum size: {resourceUploadLimitLabel}.
           </div>
         </div>
       </div>

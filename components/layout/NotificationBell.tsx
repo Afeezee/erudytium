@@ -5,9 +5,9 @@ import { Bell } from "lucide-react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { RelativeTime } from "@/components/ui/RelativeTime";
 import { createClient } from "@/lib/supabase/client";
 import { markAllAsRead } from "@/lib/actions/notifications";
-import { formatRelativeTime } from "@/lib/utils";
 import type { Notification } from "@/types";
 
 interface NotificationBellProps {
@@ -27,8 +27,7 @@ export function NotificationBell({ initialNotifications, userId }: NotificationB
     let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
 
     const setup = async () => {
-      const token = await getToken({ skipCache: true });
-      const supabase = createClient(token ?? undefined);
+      const supabase = createClient(() => getToken({ skipCache: true }));
       supabaseClient = supabase;
       channel = supabase
         .channel(channelName)
@@ -104,7 +103,7 @@ export function NotificationBell({ initialNotifications, userId }: NotificationB
                     <span className="font-medium text-neutral-900 dark:text-neutral-100">{notification.message}</span>
                     {!notification.is_read ? <span className="h-2 w-2 rounded-full bg-error" /> : null}
                   </div>
-                  <span className="text-xs text-neutral-500">{formatRelativeTime(new Date(notification.created_at))}</span>
+                  <RelativeTime value={notification.created_at} className="text-xs text-neutral-500" />
                 </a>
               </DropdownMenuItem>
             ))

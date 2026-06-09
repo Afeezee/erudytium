@@ -10,11 +10,19 @@ interface FileDropzoneProps {
   accept: Record<string, string[]>;
   maxSize: number;
   file: File | null;
-  onFileSelect: (file: File | null) => void;
+  onFileSelect: (file: File | null, error?: string | null) => void;
   uploadProgress?: number;
   error?: string | null;
   success?: boolean;
 }
+
+const formatAcceptedFileTypes = (accept: Record<string, string[]>) => {
+  const extensions = [...new Set(Object.values(accept).flat())]
+    .map((extension) => extension.replace(/^\./, "").toUpperCase())
+    .filter(Boolean);
+
+  return extensions.length > 0 ? extensions.join(", ") : "Supported files";
+};
 
 const matchesAcceptedFile = (file: File, accept: Record<string, string[]>) => {
   const rules = Object.entries(accept);
@@ -41,6 +49,7 @@ export function FileDropzone({ accept, maxSize, file, onFileSelect, uploadProgre
   const [isDragActive, setIsDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const acceptValue = useMemo(() => Object.entries(accept).flatMap(([mime, extensions]) => [mime, ...extensions]).join(","), [accept]);
+  const acceptedFileTypesLabel = useMemo(() => formatAcceptedFileTypes(accept), [accept]);
 
   useEffect(() => {
     if (!file && inputRef.current) {
@@ -49,12 +58,22 @@ export function FileDropzone({ accept, maxSize, file, onFileSelect, uploadProgre
   }, [file]);
 
   const handleSelectedFile = (selectedFile: File | null) => {
-    if (!selectedFile || selectedFile.size > maxSize || !matchesAcceptedFile(selectedFile, accept)) {
-      onFileSelect(null);
+    if (!selectedFile) {
+      onFileSelect(null, null);
       return;
     }
 
-    onFileSelect(selectedFile);
+    if (selectedFile.size > maxSize) {
+      onFileSelect(null, `This file is ${formatFileSize(selectedFile.size)}. The upload limit is ${formatFileSize(maxSize)}.`);
+      return;
+    }
+
+    if (!matchesAcceptedFile(selectedFile, accept)) {
+      onFileSelect(null, `Unsupported file type. Please upload ${acceptedFileTypesLabel}.`);
+      return;
+    }
+
+    onFileSelect(selectedFile, null);
   };
 
   const FileIcon = file ? getFileIcon(file.type) : UploadCloud;
@@ -104,7 +123,7 @@ export function FileDropzone({ accept, maxSize, file, onFileSelect, uploadProgre
         <div className="mt-4 space-y-2">
           <p className="font-semibold">{file ? file.name : isDragActive ? "Drop the file here" : "Drag and drop a file here"}</p>
           <p className="text-sm text-neutral-600 dark:text-neutral-300">
-            {file ? `${formatFileSize(file.size)} • ${file.type || "Unknown type"}` : "PDF, DOCX, or EPUB up to 50MB. Click to browse."}
+            {file ? `${formatFileSize(file.size)} • ${file.type || "Unknown type"}` : `${acceptedFileTypesLabel} up to ${formatFileSize(maxSize)}. Click to browse.`}
           </p>
         </div>
       </div>

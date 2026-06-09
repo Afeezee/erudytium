@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_PREFERENCES } from "@/lib/constants";
+import { DEFAULT_PREFERENCES, MAX_RESOURCE_UPLOAD_BYTES } from "@/lib/constants";
 
 export const profileSchema = z.object({
   name: z.string().min(2).max(120),
@@ -17,6 +17,18 @@ export const reviewSchema = z.object({
 export const requestResourceSchema = z.object({
   title: z.string().min(3).max(180),
   description: z.string().max(1200).optional().or(z.literal(""))
+});
+
+export const resourceUploadSchema = z.object({
+  title: z.string().min(3).max(180),
+  description: z.string().min(10).max(1200),
+  categoryId: z.string().uuid().optional().or(z.literal("")),
+  restrictedTo: z.enum(["all", "lecturers_only", "final_year_only"])
+});
+
+export const finalizeResourceUploadSchema = resourceUploadSchema.extend({
+  filePath: z.string().min(1).max(512),
+  fileSize: z.coerce.number().int().positive().max(MAX_RESOURCE_UPLOAD_BYTES).optional()
 });
 
 export const roomSchema = z.object({

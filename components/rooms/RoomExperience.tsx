@@ -14,10 +14,10 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { RelativeTime } from "@/components/ui/RelativeTime";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { deleteMessage, getOlderMessages, joinRoom, kickMember, leaveRoom, muteMember, pinMessage, promoteToModerator, sendMessage } from "@/lib/actions/rooms";
-import { formatRelativeTime } from "@/lib/utils";
+import { createMessageAttachmentUploadUrl, deleteMessage, getOlderMessages, joinRoom, kickMember, leaveRoom, muteMember, pinMessage, promoteToModerator, sendMessage } from "@/lib/actions/rooms";
 import type { Message, Resource, RoomMember, StudyRoom, User } from "@/types";
 
 interface RoomExperienceProps {
@@ -29,6 +29,51 @@ interface RoomExperienceProps {
 }
 
 const EMOJIS = ["😀", "🔥", "📚", "✅", "🧠", "💡", "🎯", "📝"];
+const URL_SPLIT_PATTERN = /(https?:\/\/[^\s]+)/g;
+const URL_SEGMENT_PATTERN = /^https?:\/\/[^\s]+$/;
+
+const mergeMessages = (current: Message[], incoming: Message[]) => {
+  const messageMap = new Map(current.map((message) => [message.id, message]));
+
+  for (const message of incoming) {
+    const existingMessage = messageMap.get(message.id);
+    messageMap.set(
+      message.id,
+      existingMessage
+        ? {
+            ...existingMessage,
+            ...message,
+            user: message.user ?? existingMessage.user ?? null
+          }
+        : message
+    );
+  }
+
+  return [...messageMap.values()].sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+};
+
+const renderMessageContent = (content: string) =>
+  content.split(URL_SPLIT_PATTERN).map((segment, index) => {
+    if (!segment) {
+      return null;
+    }
+
+    if (URL_SEGMENT_PATTERN.test(segment)) {
+      return (
+        <a
+          key={`${segment}-${index}`}
+          href={segment}
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium text-accent underline-offset-4 hover:underline"
+        >
+          {segment}
+        </a>
+      );
+    }
+
+    return <span key={`${segment}-${index}`}>{segment}</span>;
+  });
 
 export function RoomExperience({ room, currentUser, members, messages: initialMessages, shareableResources }: RoomExperienceProps) {
   const { getToken } = useAuth();
@@ -43,10 +88,12 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null);
   const [shareQuery, setShareQuery] = useState("");
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
   const [mentionIndex, setMentionIndex] = useState(0);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const channelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
 
@@ -67,11 +114,30 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     [shareableResources, shareQuery]
   );
 
+  const resolveMessageUser = (message: Message) =>
+    message.user ??
+    members.find((member) => member.user_id === message.user_id)?.user ??
+    (message.user_id === currentUser.id
+      ? {
+          id: currentUser.id,
+          name: currentUser.name,
+          avatar_url: currentUser.avatar_url
+        }
+      : null);
+
+  const upsertMessages = (incomingMessages: Message[]) => {
+    setMessages((current) => mergeMessages(current, incomingMessages.map((message) => ({ ...message, user: resolveMessageUser(message) }))));
+  };
+
   useEffect(() => {
     if (!timerRunning) return;
     const interval = window.setInterval(() => setStudySeconds((value) => value + 1), 1000);
     return () => window.clearInterval(interval);
   }, [timerRunning]);
+
+  useEffect(() => {
+    upsertMessages(initialMessages);
+  }, [currentUser.avatar_url, currentUser.id, currentUser.name, initialMessages, members]);
 
   useEffect(() => {
     setCountdownNow(Date.now());
@@ -86,6 +152,17 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   }, []);
 
   useEffect(() => {
+    const composer = composerRef.current;
+
+    if (!composer) {
+      return;
+    }
+
+    composer.style.height = "auto";
+    composer.style.height = `${Math.min(composer.scrollHeight, 160)}px`;
+  }, [draft]);
+
+  useEffect(() => {
     if (!canParticipate) {
       return;
     }
@@ -95,8 +172,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
 
     const setupRealtime = async () => {
-      const token = await getToken({ skipCache: true });
-      const supabase = createClient(token ?? undefined);
+      const supabase = createClient(() => getToken({ skipCache: true }));
       supabaseClient = supabase;
       channel = supabase
         .channel(`room:${room.id}:${currentUser.id}:${Date.now()}`, {
@@ -118,14 +194,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
               return;
             }
 
-            const message = payload.new as Message;
-            setMessages((current) => {
-              if (current.some((item) => item.id === message.id)) {
-                return current;
-              }
-
-              return [...current, message];
-            });
+            upsertMessages([payload.new as Message]);
             const viewport = scrollViewportRef.current;
             if (viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 140) {
               viewport.scrollTop = viewport.scrollHeight;
@@ -171,7 +240,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
         supabaseClient?.removeChannel(channel);
       }
     };
-  }, [canParticipate, currentUser.email, currentUser.id, currentUser.name, getToken, room.id]);
+  }, [canParticipate, currentUser.avatar_url, currentUser.email, currentUser.id, currentUser.name, getToken, members, room.id]);
 
   const examCountdown = useMemo(() => {
     if (!room.exam_date || countdownNow === null) return null;
@@ -183,6 +252,28 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     const seconds = Math.floor((diff / 1000) % 60);
     return `${days}d ${hours}h ${minutes}m ${seconds}s`;
   }, [countdownNow, room.exam_date]);
+
+  const focusComposer = () => {
+    requestAnimationFrame(() => {
+      const composer = composerRef.current;
+
+      if (!composer) {
+        return;
+      }
+
+      composer.focus();
+      const cursorPosition = composer.value.length;
+      composer.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  };
+
+  const scrollToBottom = () => {
+    const viewport = scrollViewportRef.current;
+
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
+    }
+  };
 
   const sendCurrentMessage = () => {
     if (!canParticipate) {
@@ -199,18 +290,19 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
 
     startTransition(async () => {
       const sanitized = DOMPurify.sanitize(draft, { ALLOWED_TAGS: [] }).trim();
-      const result = await sendMessage(room.id, sanitized || (attachmentUrl ? "Shared an attachment" : ""), attachmentUrl ?? undefined);
+      const content = sanitized || (attachmentUrl ? "Shared an attachment" : "");
+      const result = await sendMessage(room.id, content, attachmentUrl ?? undefined);
 
       if (result.error || !result.data) {
         toast.error(result.error ?? "Unable to send message.");
         return;
       }
 
-      setMessages((current) => [...current, result.data!]);
+      upsertMessages([result.data]);
       setDraft("");
       setAttachmentUrl(null);
-      const viewport = scrollViewportRef.current;
-      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+      scrollToBottom();
+      focusComposer();
     });
   };
 
@@ -221,10 +313,18 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     }
 
     setAttachmentUploading(true);
-    const token = await getToken({ skipCache: true });
-    const supabase = createClient(token ?? undefined);
-    const path = `${room.id}/${currentUser.id}-${Date.now()}-${file.name}`;
-    const { error } = await supabase.storage.from(MESSAGE_BUCKET).upload(path, file, { upsert: true });
+    const uploadTarget = await createMessageAttachmentUploadUrl(room.id, file.name);
+
+    if (uploadTarget.error || !uploadTarget.data) {
+      toast.error(uploadTarget.error ?? "Unable to prepare attachment upload.");
+      setAttachmentUploading(false);
+      return;
+    }
+
+    const supabase = createClient();
+    const { error } = await supabase.storage.from(MESSAGE_BUCKET).uploadToSignedUrl(uploadTarget.data.path, uploadTarget.data.token, file, {
+      contentType: file.type || undefined
+    });
 
     if (error) {
       toast.error(error.message);
@@ -232,9 +332,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
       return;
     }
 
-    const { data } = supabase.storage.from(MESSAGE_BUCKET).getPublicUrl(path);
+    const { data } = supabase.storage.from(MESSAGE_BUCKET).getPublicUrl(uploadTarget.data.path);
     setAttachmentUrl(data.publicUrl);
     setAttachmentUploading(false);
+    focusComposer();
   };
 
   const handleTyping = () => {
@@ -388,7 +489,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     const result = await getOlderMessages(room.id, before);
                     if (result.data?.length) {
                       const previousHeight = viewport.scrollHeight;
-                      setMessages((current) => [...result.data!, ...current.filter((item) => !result.data!.some((older) => older.id === item.id))]);
+                      upsertMessages(result.data);
                       requestAnimationFrame(() => {
                         viewport.scrollTop = viewport.scrollHeight - previousHeight;
                       });
@@ -417,10 +518,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                               <span className="font-semibold">{message.user?.name ?? "Member"}</span>
                               {message.is_pinned ? <Pin className="h-4 w-4 text-warning" /> : null}
                             </div>
-                            <span className="text-xs text-neutral-500">{formatRelativeTime(new Date(message.created_at))}</span>
+                            <RelativeTime value={message.created_at} className="text-xs text-neutral-500" />
                           </div>
                         ) : null}
-                        <p className="whitespace-pre-wrap text-sm leading-6 text-neutral-700 dark:text-neutral-200">{message.content}</p>
+                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-neutral-700 dark:text-neutral-200">{renderMessageContent(message.content)}</p>
                         {message.file_url ? <a href={message.file_url} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent">Open attachment</a> : null}
                       </div>
                       <DropdownMenu>
@@ -462,6 +563,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
               ) : null}
               {attachmentUrl ? <div className="rounded-2xl bg-accent/10 px-3 py-2 text-sm text-accent">Attachment ready to send.</div> : null}
               <textarea
+                ref={composerRef}
                 value={draft}
                 rows={1}
                 maxLength={4000}
@@ -471,8 +573,6 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                 onChange={(event) => {
                   setDraft(event.target.value);
                   handleTyping();
-                  event.currentTarget.style.height = "auto";
-                  event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 160)}px`;
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -513,7 +613,16 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                       </div>
                     </DialogContent>
                   </Dialog>
-                  <Dialog>
+                  <Dialog
+                    open={isShareDialogOpen}
+                    onOpenChange={(open) => {
+                      setIsShareDialogOpen(open);
+
+                      if (!open) {
+                        setShareQuery("");
+                      }
+                    }}
+                  >
                     <DialogTrigger asChild>
                       <Button variant="outline">Share resource</Button>
                     </DialogTrigger>
@@ -526,7 +635,21 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                         <Input placeholder="Search resources" value={shareQuery} onChange={(event) => setShareQuery(event.target.value)} />
                         <div className="space-y-3">
                           {filteredResources.map((resource) => (
-                            <button key={resource.id} type="button" className="w-full rounded-2xl border border-border px-4 py-3 text-left transition hover:border-accent" onClick={() => setDraft((current) => `${current}\nStudy resource: ${resource.title} ${window.location.origin}/dashboard/library/${resource.id}`.trim())}>
+                            <button
+                              key={resource.id}
+                              type="button"
+                              className="w-full rounded-2xl border border-border px-4 py-3 text-left transition hover:border-accent"
+                              onClick={() => {
+                                const resourceLink = `${window.location.origin}/dashboard/library/${resource.id}`;
+                                setDraft((current) => {
+                                  const separator = current.trim().length > 0 && !current.endsWith("\n") ? "\n" : "";
+                                  return `${current}${separator}Study resource: ${resource.title} ${resourceLink}`;
+                                });
+                                setShareQuery("");
+                                setIsShareDialogOpen(false);
+                                focusComposer();
+                              }}
+                            >
                               <p className="font-medium">{resource.title}</p>
                               <p className="text-sm text-neutral-500">{resource.category?.name}</p>
                             </button>

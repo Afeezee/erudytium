@@ -6,9 +6,10 @@ import { useTransition } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { RelativeTime } from "@/components/ui/RelativeTime";
 import { ResourceCardSkeleton } from "@/components/ui/Skeleton";
 import { StarRating } from "@/components/ui/StarRating";
-import { formatRelativeTime, getFileIcon } from "@/lib/utils";
+import { getFileIcon } from "@/lib/utils";
 import type { Resource } from "@/types";
 
 interface ResourceCardProps {
@@ -71,7 +72,7 @@ export function ResourceCard({ resource, loading = false, onBookmarkToggle }: Re
           </div>
           <div className="flex items-center gap-2 md:col-span-2">
             <CalendarDays className="h-4 w-4" />
-            <span>{formatRelativeTime(new Date(resource.created_at))}</span>
+            <RelativeTime value={resource.created_at} />
           </div>
         </div>
         <Button asChild className="w-full">

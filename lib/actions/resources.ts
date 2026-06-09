@@ -1,11 +1,12 @@
 "use server";
 
+import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ALLOWED_RESOURCE_MIME_TYPES, MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET } from "@/lib/constants";
-import { reviewSchema, requestResourceSchema } from "@/lib/validations";
+import { finalizeResourceUploadSchema, requestResourceSchema, reviewSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
 import {
   createResourceRequestQuery,
@@ -26,12 +27,11 @@ import { createAuditLogQuery } from "@/lib/supabase/audit";
 import { createNotification } from "@/lib/actions/notifications";
 import type { ApiResponse, Category, PaginatedResponse, Resource, ResourceFilters, ResourceRequest, Review } from "@/types";
 
-const validateResourceFile = async (file: File) => {
-  if (file.size > MAX_RESOURCE_UPLOAD_BYTES) {
+const validateResourceBuffer = async (buffer: Buffer) => {
+  if (buffer.byteLength > MAX_RESOURCE_UPLOAD_BYTES) {
     throw new Error("File size exceeds the 50MB limit.");
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
   const { fileTypeFromBuffer } = await import("file-type");
   const fileType = await fileTypeFromBuffer(buffer);
 
@@ -46,6 +46,22 @@ const validateResourceFile = async (file: File) => {
   };
 };
 
+const sanitizeResourceFileName = (fileName: string) => {
+  const normalizedFileName = stripHtml(fileName).trim().toLowerCase();
+  const extension = normalizedFileName.includes(".") ? normalizedFileName.split(".").pop() ?? "bin" : "bin";
+  const baseName = normalizedFileName.replace(/\.[^/.]+$/, "");
+  const safeBaseName = baseName.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const safeExtension = extension.replace(/[^a-z0-9]+/g, "");
+
+  return `${safeBaseName || "resource"}.${safeExtension || "bin"}`;
+};
+
+const isOwnedResourcePath = (userId: string, filePath: string) => filePath.startsWith(`${userId}/`);
+
+const cleanupResourceUpload = async (adminClient: ReturnType<typeof getAdminClient>, filePath: string) => {
+  await adminClient.storage.from(RESOURCE_BUCKET).remove([filePath]);
+};
+
 export const getCategories = async (): Promise<ApiResponse<Category[]>> => {
   try {
     const supabase = await createClient();
@@ -56,53 +72,108 @@ export const getCategories = async (): Promise<ApiResponse<Category[]>> => {
   }
 };
 
-export const uploadResource = async (formData: FormData): Promise<ApiResponse<Resource>> => {
+export const createResourceUploadUrl = async (fileName: string): Promise<ApiResponse<{ path: string; token: string }>> => {
   try {
     const user = await getCurrentUserRecord();
-    const file = formData.get("file");
+    const trimmedFileName = stripHtml(fileName).trim();
 
-    if (!(file instanceof File)) {
+    if (!trimmedFileName) {
       return { error: "A file is required." };
     }
 
-    const title = stripHtml(String(formData.get("title") ?? ""));
-    const description = stripHtml(String(formData.get("description") ?? ""));
-    const categoryId = String(formData.get("categoryId") ?? "");
-    const restrictedTo = String(formData.get("restrictedTo") ?? "all");
+    const adminClient = getAdminClient();
+    const filePath = `${user.id}/${Date.now()}-${nanoid(8)}-${sanitizeResourceFileName(trimmedFileName)}`;
+    const { data, error } = await adminClient.storage.from(RESOURCE_BUCKET).createSignedUploadUrl(filePath);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return { data: { path: data.path, token: data.token } };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Unable to prepare resource upload." };
+  }
+};
+
+export const cancelResourceUpload = async (filePath: string): Promise<ApiResponse<null>> => {
+  try {
+    const user = await getCurrentUserRecord();
+
+    if (!isOwnedResourcePath(user.id, filePath)) {
+      return { error: "Invalid upload reference." };
+    }
+
+    const adminClient = getAdminClient();
+    await cleanupResourceUpload(adminClient, filePath);
+    return { data: null };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Unable to cancel resource upload." };
+  }
+};
+
+export const finalizeResourceUpload = async (formData: FormData): Promise<ApiResponse<Resource>> => {
+  try {
+    const user = await getCurrentUserRecord();
+    const adminClient = getAdminClient();
+    const rawFilePath = String(formData.get("filePath") ?? "");
+    const parsed = finalizeResourceUploadSchema.safeParse({
+      title: stripHtml(String(formData.get("title") ?? "")),
+      description: stripHtml(String(formData.get("description") ?? "")),
+      categoryId: String(formData.get("categoryId") ?? ""),
+      restrictedTo: String(formData.get("restrictedTo") ?? "all"),
+      filePath: rawFilePath,
+      fileSize: formData.get("fileSize") ?? undefined
+    });
+
+    if (!parsed.success) {
+      if (isOwnedResourcePath(user.id, rawFilePath)) {
+        await cleanupResourceUpload(adminClient, rawFilePath);
+      }
+
+      return { error: parsed.error.issues[0]?.message ?? "Invalid resource upload." };
+    }
+
+    const { title, description, categoryId, restrictedTo, filePath } = parsed.data;
+
+    if (!isOwnedResourcePath(user.id, filePath)) {
+      return { error: "Invalid upload reference." };
+    }
+
     const tags = String(formData.get("tags") ?? "")
       .split(",")
       .map((tag) => stripHtml(tag))
       .filter(Boolean);
-    const validated = await validateResourceFile(file);
     const supabase = await createClient();
-    const adminClient = getAdminClient();
-    const filePath = `${user.id}/${Date.now()}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.${validated.ext}`;
-    const { error: uploadError } = await adminClient.storage.from(RESOURCE_BUCKET).upload(filePath, validated.buffer, {
-      contentType: validated.mime,
-      upsert: false
-    });
 
-    if (uploadError) {
-      throw new Error(uploadError.message);
+    try {
+      const { data: storedFile, error: downloadError } = await adminClient.storage.from(RESOURCE_BUCKET).download(filePath);
+
+      if (downloadError || !storedFile) {
+        throw new Error(downloadError?.message ?? "Uploaded file could not be read.");
+      }
+
+      const validated = await validateResourceBuffer(Buffer.from(await storedFile.arrayBuffer()));
+      const { data: publicUrlData } = adminClient.storage.from(RESOURCE_BUCKET).getPublicUrl(filePath);
+      const resource = await insertResourceQuery(supabase, {
+        title,
+        description,
+        file_url: publicUrlData.publicUrl,
+        file_type: validated.mime,
+        file_size: validated.buffer.byteLength,
+        category_id: categoryId || null,
+        tags,
+        uploaded_by: user.id,
+        status: "pending",
+        download_count: 0,
+        restricted_to: (restrictedTo as Resource["restricted_to"]) ?? "all"
+      });
+      revalidatePath("/dashboard/library");
+      revalidatePath("/dashboard");
+      return { data: resource };
+    } catch (error) {
+      await cleanupResourceUpload(adminClient, filePath);
+      return { error: error instanceof Error ? error.message : "Unable to upload resource." };
     }
-
-    const { data: publicUrlData } = adminClient.storage.from(RESOURCE_BUCKET).getPublicUrl(filePath);
-    const resource = await insertResourceQuery(supabase, {
-      title,
-      description,
-      file_url: publicUrlData.publicUrl,
-      file_type: validated.mime,
-      file_size: file.size,
-      category_id: categoryId || null,
-      tags,
-      uploaded_by: user.id,
-      status: "pending",
-      download_count: 0,
-      restricted_to: (restrictedTo as Resource["restricted_to"]) ?? "all"
-    });
-    revalidatePath("/dashboard/library");
-    revalidatePath("/dashboard");
-    return { data: resource };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to upload resource." };
   }

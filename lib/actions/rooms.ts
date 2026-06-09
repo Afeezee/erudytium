@@ -1,8 +1,10 @@
 "use server";
 
+import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
+import { MESSAGE_BUCKET } from "@/lib/constants";
 import { roomSchema } from "@/lib/validations";
 import { createAuditLogQuery } from "@/lib/supabase/audit";
 import { createNotification } from "@/lib/actions/notifications";
@@ -31,6 +33,16 @@ import type { ApiResponse, Message, RoomMember, StudyRoom } from "@/types";
 const isManager = (members: RoomMember[], userId: string) => members.some((member) => member.user_id === userId && ["owner", "moderator"].includes(member.role));
 const isOwner = (members: RoomMember[], userId: string) => members.some((member) => member.user_id === userId && member.role === "owner");
 const getCurrentMember = (members: RoomMember[], userId: string) => members.find((member) => member.user_id === userId) ?? null;
+
+const sanitizeAttachmentFileName = (fileName: string) => {
+  const normalizedFileName = stripHtml(fileName).trim().toLowerCase();
+  const extension = normalizedFileName.includes(".") ? normalizedFileName.split(".").pop() ?? "bin" : "bin";
+  const baseName = normalizedFileName.replace(/\.[^/.]+$/, "");
+  const safeBaseName = baseName.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const safeExtension = extension.replace(/[^a-z0-9]+/g, "");
+
+  return `${safeBaseName || "attachment"}.${safeExtension || "bin"}`;
+};
 
 const normalizeOptionalExamDate = (value: string) => {
   const trimmed = value.trim();
@@ -223,6 +235,44 @@ export const sendMessage = async (roomId: string, content: string, fileUrl?: str
     return { data: message };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to send message." };
+  }
+};
+
+export const createMessageAttachmentUploadUrl = async (
+  roomId: string,
+  fileName: string
+): Promise<ApiResponse<{ path: string; token: string }>> => {
+  try {
+    const user = await getCurrentUserRecord();
+    const safeFileName = sanitizeAttachmentFileName(fileName);
+
+    if (!safeFileName) {
+      return { error: "A file is required." };
+    }
+
+    const supabase = await createClient();
+    const members = await getRoomMembersQuery(supabase, roomId);
+    const currentMember = getCurrentMember(members, user.id);
+
+    if (!currentMember) {
+      return { error: "Join the room before sharing attachments." };
+    }
+
+    if (currentMember.is_muted) {
+      return { error: "You are muted in this room." };
+    }
+
+    const path = `${roomId}/${user.id}-${Date.now()}-${nanoid(8)}-${safeFileName}`;
+    const adminClient = getAdminClient();
+    const { data, error } = await adminClient.storage.from(MESSAGE_BUCKET).createSignedUploadUrl(path, { upsert: true });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return { data: { path: data.path, token: data.token } };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Unable to prepare attachment upload." };
   }
 };
 

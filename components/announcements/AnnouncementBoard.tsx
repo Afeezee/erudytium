@@ -7,10 +7,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RelativeTime } from "@/components/ui/RelativeTime";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { createAnnouncement } from "@/lib/actions/announcements";
-import { formatRelativeTime } from "@/lib/utils";
 import type { Announcement, UserRole } from "@/types";
 
 export function AnnouncementBoard({ announcements, role }: { announcements: Announcement[]; role: UserRole }) {
@@ -84,7 +84,7 @@ export function AnnouncementBoard({ announcements, role }: { announcements: Anno
                 </div>
                 <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-500">
                   <span>By {announcement.author?.name ?? "Staff"}</span>
-                  <span>{formatRelativeTime(new Date(announcement.created_at))}</span>
+                  <RelativeTime value={announcement.created_at} />
                   {announcement.department ? <Badge variant="accent">{announcement.department}</Badge> : null}
                 </div>
               </div>

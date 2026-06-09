@@ -7,6 +7,7 @@ import { useMemo, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { ResourceCard } from "@/components/ui/ResourceCard";
+import { RelativeTime } from "@/components/ui/RelativeTime";
 import { StarRating } from "@/components/ui/StarRating";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { downloadResource, submitReview, toggleBookmark } from "@/lib/actions/resources";
-import { formatFileSize, generateCitation, formatRelativeTime } from "@/lib/utils";
+import { formatFileSize, generateCitation } from "@/lib/utils";
 import { reviewSchema } from "@/lib/validations";
 import type { Resource, Review } from "@/types";
 
@@ -69,7 +70,7 @@ export function ResourceDetailClient({ resource, reviews, userReview, relatedRes
             <p className="text-sm leading-6 text-neutral-600 dark:text-neutral-300">{currentResource.description}</p>
             <div className="flex flex-wrap gap-6 text-sm text-neutral-600 dark:text-neutral-300">
               <span>Uploaded by {currentResource.uploader?.name ?? "Unknown"}</span>
-              <span>{formatRelativeTime(new Date(currentResource.created_at))}</span>
+              <RelativeTime value={currentResource.created_at} />
               <span>{formatFileSize(currentResource.file_size ?? 0)}</span>
               <span>{currentResource.download_count} downloads</span>
             </div>
@@ -203,7 +204,7 @@ export function ResourceDetailClient({ resource, reviews, userReview, relatedRes
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-semibold">{review.user?.name ?? "Anonymous reviewer"}</p>
-                      <p className="text-xs text-neutral-500">{formatRelativeTime(new Date(review.created_at))}</p>
+                      <RelativeTime value={review.created_at} className="text-xs text-neutral-500" />
                     </div>
                     <StarRating value={review.rating} size="sm" />
                   </div>

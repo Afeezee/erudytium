@@ -52,8 +52,7 @@ export function ProfileForm({ user, stats, action }: ProfileFormProps) {
       const file = files[0];
       if (!file) return;
       setAvatarError(null);
-      const token = await getToken({ skipCache: true });
-      const supabase = createClient(token ?? undefined);
+      const supabase = createClient(() => getToken({ skipCache: true }));
       const extension = file.name.split(".").pop() ?? "png";
       const filePath = `${user.id}/avatar-${Date.now()}.${extension}`;
       const { error } = await supabase.storage.from(AVATAR_BUCKET).upload(filePath, file, { upsert: true });
