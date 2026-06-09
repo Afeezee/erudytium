@@ -52,38 +52,53 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
         }
 
         startTransition(async () => {
-          setError(null);
-          setProgress(10);
-          const timer = window.setInterval(() => {
-            setProgress((current) => (typeof current === "number" && current < 90 ? current + 10 : current));
-          }, 180);
+          let timer: number | undefined;
 
-          const formData = new FormData();
-          formData.set("title", values.title);
-          formData.set("description", values.description);
-          formData.set("categoryId", values.categoryId ?? "");
-          formData.set("restrictedTo", values.restrictedTo);
-          formData.set("tags", tags.join(","));
-          formData.set("file", file);
-          const result = await uploadResource(formData);
+          try {
+            setError(null);
+            setProgress(10);
+            timer = window.setInterval(() => {
+              setProgress((current) => (typeof current === "number" && current < 90 ? current + 10 : current));
+            }, 180);
 
-          window.clearInterval(timer);
-          setProgress(undefined);
+            const formData = new FormData();
+            formData.set("title", values.title);
+            formData.set("description", values.description);
+            formData.set("categoryId", values.categoryId ?? "");
+            formData.set("restrictedTo", values.restrictedTo);
+            formData.set("tags", tags.join(","));
+            formData.set("file", file);
 
-          if (result.error) {
-            setError(result.error);
-            return;
+            const result = await uploadResource(formData);
+
+            if (result?.error) {
+              setError(result.error);
+              return;
+            }
+
+            if (!result?.data) {
+              setError("Unable to upload resource right now. Please try again.");
+              return;
+            }
+
+            setFile(null);
+            setTags([]);
+            form.reset({
+              title: "",
+              description: "",
+              categoryId: categories[0]?.id ?? "",
+              restrictedTo: "all"
+            });
+            toast.success("Your resource has been submitted for review");
+          } catch (submissionError) {
+            setError(submissionError instanceof Error ? submissionError.message : "Unable to upload resource right now. Please try again.");
+          } finally {
+            if (typeof timer === "number") {
+              window.clearInterval(timer);
+            }
+
+            setProgress(undefined);
           }
-
-          setFile(null);
-          setTags([]);
-          form.reset({
-            title: "",
-            description: "",
-            categoryId: categories[0]?.id ?? "",
-            restrictedTo: "all"
-          });
-          toast.success("Your resource has been submitted for review");
         });
       })}
     >
