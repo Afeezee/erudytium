@@ -53,6 +53,14 @@ export const getHomeDashboardDataQuery = async (supabase: SupabaseClient) => {
       .limit(4)
   ]);
 
+  if (trending.error || recent.error || activeRooms.error) {
+    console.error("[dashboard] getHomeDashboardDataQuery failed", {
+      trendingError: trending.error,
+      recentError: recent.error,
+      activeRoomsError: activeRooms.error
+    });
+  }
+
   return {
     trendingResources: (trending.data ?? []) as Resource[],
     recentResources: (recent.data ?? []) as Resource[],

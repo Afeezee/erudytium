@@ -2,6 +2,7 @@ import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 import type { User, UserRole } from "@/types";
 
 export const requireAuth = async () => {
@@ -15,7 +16,7 @@ export const requireAuth = async () => {
 };
 
 const bootstrapCurrentUserRecord = async (clerkId: string) => {
-  const supabase = await createClient();
+  const admin = getAdminClient();
   const clerkUser = await currentUser();
 
   if (!clerkUser) {
@@ -38,13 +39,13 @@ const bootstrapCurrentUserRecord = async (clerkId: string) => {
     name,
     avatar_url: clerkUser.imageUrl ?? null
   };
-  const { data, error } = await supabase.from("users").upsert(payload, { onConflict: "clerk_id" }).select("*").single<User>();
+  const { data, error } = await admin.from("users").upsert(payload, { onConflict: "clerk_id" }).select("*").single<User>();
 
   if (!error) {
     return data;
   }
 
-  const { data: existingUser, error: existingUserError } = await supabase
+  const { data: existingUser, error: existingUserError } = await admin
     .from("users")
     .select("*")
     .eq("clerk_id", clerkId)
@@ -54,6 +55,11 @@ const bootstrapCurrentUserRecord = async (clerkId: string) => {
     return existingUser;
   }
 
+  console.error("[auth] bootstrapCurrentUserRecord failed", {
+    clerkId,
+    upsertError: error,
+    lookupError: existingUserError
+  });
   throw new Error(error.message);
 };
 
@@ -67,7 +73,31 @@ export const getCurrentUserRecord = cache(async () => {
     .maybeSingle<User>();
 
   if (error) {
-    throw new Error(error.message);
+    console.error("[auth] getCurrentUserRecord lookup failed via user-scoped client", {
+      clerkId: authState.userId,
+      error
+    });
+
+    const admin = getAdminClient();
+    const { data: fallbackData, error: fallbackError } = await admin
+      .from("users")
+      .select("*")
+      .eq("clerk_id", authState.userId)
+      .maybeSingle<User>();
+
+    if (fallbackError) {
+      console.error("[auth] getCurrentUserRecord admin fallback failed", {
+        clerkId: authState.userId,
+        error: fallbackError
+      });
+      throw new Error(fallbackError.message);
+    }
+
+    if (fallbackData) {
+      return fallbackData;
+    }
+
+    return bootstrapCurrentUserRecord(authState.userId);
   }
 
   if (data) {
