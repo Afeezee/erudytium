@@ -27,8 +27,9 @@ export const resourceUploadSchema = z.object({
 });
 
 export const finalizeResourceUploadSchema = resourceUploadSchema.extend({
-  filePath: z.string().min(1).max(512),
-  fileSize: z.coerce.number().int().positive().max(MAX_RESOURCE_UPLOAD_BYTES).optional()
+  blobUrl: z.string().url().max(1024),
+  fileSize: z.coerce.number().int().positive().max(MAX_RESOURCE_UPLOAD_BYTES),
+  fileType: z.string().min(1).max(120)
 });
 
 export const roomSchema = z.object({

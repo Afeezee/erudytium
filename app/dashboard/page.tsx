@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { Bookmark, BookOpenText, LibraryBig, UploadCloud } from "lucide-react";
 import { getCurrentUserRecord } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
-import { getHomeDashboardDataQuery } from "@/lib/supabase/dashboard";
+import { getHomeDashboardData } from "@/lib/db/queries/dashboard";
 import { Card, CardContent } from "@/components/ui/card";
 import { ResourceCard } from "@/components/ui/ResourceCard";
 import { RoomCard } from "@/components/ui/RoomCard";
@@ -16,8 +15,7 @@ const actions = [
 
 export default async function DashboardHomePage() {
   const user = await getCurrentUserRecord();
-  const supabase = await createClient();
-  const { trendingResources, recentResources, activeRooms } = await getHomeDashboardDataQuery(supabase);
+  const { trendingResources, recentResources, activeRooms } = await getHomeDashboardData();
 
   return (
     <div className="space-y-8">

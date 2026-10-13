@@ -1,14 +1,14 @@
 import { getCurrentUserRecord } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
-import { getUserNotificationsQuery } from "@/lib/supabase/notifications";
+import { getUserNotifications } from "@/lib/db/queries/notifications";
+
+export const dynamic = "force-dynamic";
 import { Navbar } from "@/components/layout/Navbar";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { PageTransition } from "@/components/layout/PageTransition";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUserRecord();
-  const supabase = await createClient();
-  const notifications = await getUserNotificationsQuery(supabase, user.id);
+  const notifications = await getUserNotifications(user.id);
   const isAdmin = user.role === "admin";
 
   return (

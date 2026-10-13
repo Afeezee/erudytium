@@ -1,11 +1,9 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { OverviewCharts } from "@/components/admin/OverviewCharts";
-import { createClient } from "@/lib/supabase/server";
-import { getDashboardOverviewQuery } from "@/lib/supabase/dashboard";
+import { getDashboardOverview } from "@/lib/db/queries/dashboard";
 
 export default async function AdminOverviewPage() {
-  const supabase = await createClient();
-  const overview = await getDashboardOverviewQuery(supabase);
+  const overview = await getDashboardOverview();
 
   return (
     <div className="space-y-6">

@@ -1,12 +1,11 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
 import { Bell } from "lucide-react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { RelativeTime } from "@/components/ui/RelativeTime";
-import { createClient } from "@/lib/supabase/client";
+import { getPusherClient } from "@/lib/pusher/client";
 import { markAllAsRead } from "@/lib/actions/notifications";
 import type { Notification } from "@/types";
 
@@ -16,50 +15,25 @@ interface NotificationBellProps {
 }
 
 export function NotificationBell({ initialNotifications, userId }: NotificationBellProps) {
-  const { getToken } = useAuth();
   const [notifications, setNotifications] = useState(initialNotifications);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    let isMounted = true;
-    let channelName = `notifications:${userId}:${Date.now()}`;
-    let supabaseClient: ReturnType<typeof createClient> | null = null;
-    let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
+    const pusher = getPusherClient();
+    const channelName = `private-user-${userId}`;
+    const channel = pusher.subscribe(channelName);
 
-    const setup = async () => {
-      const supabase = createClient(() => getToken({ skipCache: true }));
-      supabaseClient = supabase;
-      channel = supabase
-        .channel(channelName)
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "notifications",
-            filter: `user_id=eq.${userId}`
-          },
-          (payload) => {
-            if (!isMounted) {
-              return;
-            }
-
-            setNotifications((current) => [payload.new as Notification, ...current].slice(0, 10));
-          }
-        )
-        .subscribe();
+    const handleNew = (payload: Notification) => {
+      setNotifications((current) => [payload, ...current].slice(0, 10));
     };
 
-    void setup();
+    channel.bind("notification:new", handleNew);
 
     return () => {
-      isMounted = false;
-      if (channel) {
-        void channel.unsubscribe();
-        supabaseClient?.removeChannel(channel);
-      }
+      channel.unbind("notification:new", handleNew);
+      pusher.unsubscribe(channelName);
     };
-  }, [getToken, userId]);
+  }, [userId]);
 
   const unreadCount = useMemo(() => notifications.filter((item) => !item.is_read).length, [notifications]);
 

@@ -1,110 +1,45 @@
 "use server";
 
-import { nanoid } from "nanoid";
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
-import { getAdminClient } from "@/lib/supabase/admin";
-import { ALLOWED_RESOURCE_MIME_TYPES, MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET } from "@/lib/constants";
+import { ALLOWED_RESOURCE_MIME_TYPES, MAX_RESOURCE_UPLOAD_BYTES } from "@/lib/constants";
 import { finalizeResourceUploadSchema, requestResourceSchema, reviewSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
+import { deleteBlob } from "@/lib/blob/server";
 import {
-  createResourceRequestQuery,
-  deleteResourceQuery,
-  getAllResourceRequestsQuery,
-  getBookmarkedResourcesQuery,
-  getCategoriesQuery,
-  getUserResourceRequestsQuery,
-  incrementResourceDownloadQuery,
-  insertResourceQuery,
-  searchResourcesQuery,
-  toggleBookmarkQuery,
-  updateResourceRequestQuery,
-  updateResourceStatusQuery,
-  upsertReviewQuery
-} from "@/lib/supabase/resources";
-import { createAuditLogQuery } from "@/lib/supabase/audit";
+  createResourceRequest,
+  deleteResource as deleteResourceQuery,
+  getAllResourceRequests as getAllResourceRequestsQuery,
+  getBookmarkedResources as getBookmarkedResourcesQuery,
+  getCategories as getCategoriesQuery,
+  getUserResourceRequests,
+  incrementResourceDownload,
+  insertResource,
+  searchResources as searchResourcesQuery,
+  toggleBookmark as toggleBookmarkQuery,
+  updateResourceRequest,
+  updateResourceStatus,
+  upsertReview
+} from "@/lib/db/queries/resources";
+import { createAuditLog } from "@/lib/db/queries/audit";
 import { createNotification } from "@/lib/actions/notifications";
 import type { ApiResponse, Category, PaginatedResponse, Resource, ResourceFilters, ResourceRequest, Review } from "@/types";
 
-const validateResourceBuffer = async (buffer: Buffer) => {
-  if (buffer.byteLength > MAX_RESOURCE_UPLOAD_BYTES) {
-    throw new Error("File size exceeds the 50MB limit.");
-  }
-
-  const { fileTypeFromBuffer } = await import("file-type");
-  const fileType = await fileTypeFromBuffer(buffer);
-
-  if (!fileType || !ALLOWED_RESOURCE_MIME_TYPES.includes(fileType.mime as (typeof ALLOWED_RESOURCE_MIME_TYPES)[number])) {
-    throw new Error("Unsupported file type. Please upload a PDF, DOCX, or EPUB file.");
-  }
-
-  return {
-    buffer,
-    mime: fileType.mime,
-    ext: fileType.ext
-  };
-};
-
-const sanitizeResourceFileName = (fileName: string) => {
-  const normalizedFileName = stripHtml(fileName).trim().toLowerCase();
-  const extension = normalizedFileName.includes(".") ? normalizedFileName.split(".").pop() ?? "bin" : "bin";
-  const baseName = normalizedFileName.replace(/\.[^/.]+$/, "");
-  const safeBaseName = baseName.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const safeExtension = extension.replace(/[^a-z0-9]+/g, "");
-
-  return `${safeBaseName || "resource"}.${safeExtension || "bin"}`;
-};
-
-const isOwnedResourcePath = (userId: string, filePath: string) => filePath.startsWith(`${userId}/`);
-
-const cleanupResourceUpload = async (adminClient: ReturnType<typeof getAdminClient>, filePath: string) => {
-  await adminClient.storage.from(RESOURCE_BUCKET).remove([filePath]);
-};
-
 export const getCategories = async (): Promise<ApiResponse<Category[]>> => {
   try {
-    const supabase = await createClient();
-    const categories = await getCategoriesQuery(supabase);
+    const categories = await getCategoriesQuery();
     return { data: categories };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load categories." };
   }
 };
 
-export const createResourceUploadUrl = async (fileName: string): Promise<ApiResponse<{ path: string; token: string }>> => {
+export const cancelResourceUpload = async (blobUrl: string): Promise<ApiResponse<null>> => {
   try {
-    const user = await getCurrentUserRecord();
-    const trimmedFileName = stripHtml(fileName).trim();
-
-    if (!trimmedFileName) {
-      return { error: "A file is required." };
+    await getCurrentUserRecord();
+    if (blobUrl) {
+      await deleteBlob(blobUrl);
     }
-
-    const adminClient = getAdminClient();
-    const filePath = `${user.id}/${Date.now()}-${nanoid(8)}-${sanitizeResourceFileName(trimmedFileName)}`;
-    const { data, error } = await adminClient.storage.from(RESOURCE_BUCKET).createSignedUploadUrl(filePath);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    return { data: { path: data.path, token: data.token } };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : "Unable to prepare resource upload." };
-  }
-};
-
-export const cancelResourceUpload = async (filePath: string): Promise<ApiResponse<null>> => {
-  try {
-    const user = await getCurrentUserRecord();
-
-    if (!isOwnedResourcePath(user.id, filePath)) {
-      return { error: "Invalid upload reference." };
-    }
-
-    const adminClient = getAdminClient();
-    await cleanupResourceUpload(adminClient, filePath);
     return { data: null };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to cancel resource upload." };
@@ -112,54 +47,52 @@ export const cancelResourceUpload = async (filePath: string): Promise<ApiRespons
 };
 
 export const finalizeResourceUpload = async (formData: FormData): Promise<ApiResponse<Resource>> => {
+  const rawBlobUrl = String(formData.get("blobUrl") ?? "");
+
   try {
     const user = await getCurrentUserRecord();
-    const adminClient = getAdminClient();
-    const rawFilePath = String(formData.get("filePath") ?? "");
+
     const parsed = finalizeResourceUploadSchema.safeParse({
       title: stripHtml(String(formData.get("title") ?? "")),
       description: stripHtml(String(formData.get("description") ?? "")),
       categoryId: String(formData.get("categoryId") ?? ""),
       restrictedTo: String(formData.get("restrictedTo") ?? "all"),
-      filePath: rawFilePath,
-      fileSize: formData.get("fileSize") ?? undefined
+      blobUrl: rawBlobUrl,
+      fileSize: formData.get("fileSize") ?? undefined,
+      fileType: String(formData.get("fileType") ?? "")
     });
 
     if (!parsed.success) {
-      if (isOwnedResourcePath(user.id, rawFilePath)) {
-        await cleanupResourceUpload(adminClient, rawFilePath);
+      if (rawBlobUrl) {
+        await deleteBlob(rawBlobUrl);
       }
-
       return { error: parsed.error.issues[0]?.message ?? "Invalid resource upload." };
     }
 
-    const { title, description, categoryId, restrictedTo, filePath } = parsed.data;
+    const { title, description, categoryId, restrictedTo, blobUrl, fileSize, fileType } = parsed.data;
 
-    if (!isOwnedResourcePath(user.id, filePath)) {
-      return { error: "Invalid upload reference." };
+    if (fileSize > MAX_RESOURCE_UPLOAD_BYTES) {
+      await deleteBlob(blobUrl);
+      return { error: "File size exceeds the 50MB limit." };
+    }
+
+    if (!ALLOWED_RESOURCE_MIME_TYPES.includes(fileType as (typeof ALLOWED_RESOURCE_MIME_TYPES)[number])) {
+      await deleteBlob(blobUrl);
+      return { error: "Unsupported file type. Please upload a PDF, DOCX, or EPUB file." };
     }
 
     const tags = String(formData.get("tags") ?? "")
       .split(",")
       .map((tag) => stripHtml(tag))
       .filter(Boolean);
-    const supabase = await createClient();
 
     try {
-      const { data: storedFile, error: downloadError } = await adminClient.storage.from(RESOURCE_BUCKET).download(filePath);
-
-      if (downloadError || !storedFile) {
-        throw new Error(downloadError?.message ?? "Uploaded file could not be read.");
-      }
-
-      const validated = await validateResourceBuffer(Buffer.from(await storedFile.arrayBuffer()));
-      const { data: publicUrlData } = adminClient.storage.from(RESOURCE_BUCKET).getPublicUrl(filePath);
-      const resource = await insertResourceQuery(supabase, {
+      const resource = await insertResource({
         title,
         description,
-        file_url: publicUrlData.publicUrl,
-        file_type: validated.mime,
-        file_size: validated.buffer.byteLength,
+        file_url: blobUrl,
+        file_type: fileType,
+        file_size: fileSize,
         category_id: categoryId || null,
         tags,
         uploaded_by: user.id,
@@ -171,28 +104,22 @@ export const finalizeResourceUpload = async (formData: FormData): Promise<ApiRes
       revalidatePath("/dashboard");
       return { data: resource };
     } catch (error) {
-      await cleanupResourceUpload(adminClient, filePath);
+      await deleteBlob(blobUrl);
       return { error: error instanceof Error ? error.message : "Unable to upload resource." };
     }
   } catch (error) {
+    if (rawBlobUrl) {
+      await deleteBlob(rawBlobUrl);
+    }
     return { error: error instanceof Error ? error.message : "Unable to upload resource." };
   }
 };
 
 export const downloadResource = async (id: string): Promise<ApiResponse<{ signedUrl: string }>> => {
   try {
-    const supabase = await createClient();
-    const adminClient = getAdminClient();
-    const fileUrl = await incrementResourceDownloadQuery(supabase, id);
-    const path = new URL(fileUrl).pathname.split(`/${RESOURCE_BUCKET}/`)[1];
-    const { data, error } = await adminClient.storage.from(RESOURCE_BUCKET).createSignedUrl(path, 60);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
+    const fileUrl = await incrementResourceDownload(id);
     revalidatePath(`/dashboard/library/${id}`);
-    return { data: { signedUrl: data.signedUrl } };
+    return { data: { signedUrl: fileUrl } };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to prepare download." };
   }
@@ -201,8 +128,7 @@ export const downloadResource = async (id: string): Promise<ApiResponse<{ signed
 export const toggleBookmark = async (resourceId: string): Promise<ApiResponse<{ bookmarked: boolean }>> => {
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const bookmarked = await toggleBookmarkQuery(supabase, user.id, resourceId);
+    const bookmarked = await toggleBookmarkQuery(user.id, resourceId);
     revalidatePath("/dashboard/library");
     revalidatePath("/dashboard/library/bookmarks");
     revalidatePath(`/dashboard/library/${resourceId}`);
@@ -221,8 +147,7 @@ export const submitReview = async (resourceId: string, rating: number, comment?:
 
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const review = await upsertReviewQuery(supabase, {
+    const review = await upsertReview({
       user_id: user.id,
       resource_id: parsed.data.resourceId,
       rating: parsed.data.rating,
@@ -242,8 +167,7 @@ export const searchResources = async (
 ): Promise<ApiResponse<PaginatedResponse<Resource>>> => {
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const result = await searchResourcesQuery(supabase, user.id, query, filters, page);
+    const result = await searchResourcesQuery(user.id, query, filters, page);
     return { data: result };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to search resources." };
@@ -253,8 +177,7 @@ export const searchResources = async (
 export const getBookmarkedResources = async (): Promise<ApiResponse<Awaited<ReturnType<typeof getBookmarkedResourcesQuery>>>> => {
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const bookmarks = await getBookmarkedResourcesQuery(supabase, user.id);
+    const bookmarks = await getBookmarkedResourcesQuery(user.id);
     return { data: bookmarks };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load bookmarks." };
@@ -264,9 +187,8 @@ export const getBookmarkedResources = async (): Promise<ApiResponse<Awaited<Retu
 export const approveResource = async (id: string): Promise<ApiResponse<Resource>> => {
   try {
     const admin = await requireRole(["admin"]);
-    const supabase = await createClient();
-    const resource = await updateResourceStatusQuery(supabase, id, "approved");
-    await createAuditLogQuery(supabase, {
+    const resource = await updateResourceStatus(id, "approved");
+    await createAuditLog({
       admin_id: admin.id,
       action: "resource.approved",
       target_type: "resource",
@@ -287,9 +209,8 @@ export const approveResource = async (id: string): Promise<ApiResponse<Resource>
 export const rejectResource = async (id: string, reason: string): Promise<ApiResponse<Resource>> => {
   try {
     const admin = await requireRole(["admin"]);
-    const supabase = await createClient();
-    const resource = await updateResourceStatusQuery(supabase, id, "rejected");
-    await createAuditLogQuery(supabase, {
+    const resource = await updateResourceStatus(id, "rejected");
+    await createAuditLog({
       admin_id: admin.id,
       action: "resource.rejected",
       target_type: "resource",
@@ -308,8 +229,8 @@ export const rejectResource = async (id: string, reason: string): Promise<ApiRes
 
 export const deleteResource = async (id: string): Promise<ApiResponse<null>> => {
   try {
-    const supabase = await createClient();
-    await deleteResourceQuery(supabase, id);
+    await requireRole(["admin"]);
+    await deleteResourceQuery(id);
     revalidatePath("/dashboard/library");
     revalidatePath("/admin/resources");
     return { data: null };
@@ -327,8 +248,7 @@ export const requestResource = async (title: string, description?: string): Prom
 
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const request = await createResourceRequestQuery(supabase, {
+    const request = await createResourceRequest({
       user_id: user.id,
       title: parsed.data.title,
       description: parsed.data.description || null
@@ -343,8 +263,7 @@ export const requestResource = async (title: string, description?: string): Prom
 export const getMyResourceRequests = async (): Promise<ApiResponse<ResourceRequest[]>> => {
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const requests = await getUserResourceRequestsQuery(supabase, user.id);
+    const requests = await getUserResourceRequests(user.id);
     return { data: requests };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load requests." };
@@ -354,8 +273,7 @@ export const getMyResourceRequests = async (): Promise<ApiResponse<ResourceReque
 export const getAllResourceRequests = async (): Promise<ApiResponse<ResourceRequest[]>> => {
   try {
     await requireRole(["admin"]);
-    const supabase = await createClient();
-    const requests = await getAllResourceRequestsQuery(supabase);
+    const requests = await getAllResourceRequestsQuery();
     return { data: requests };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load requests." };
@@ -369,19 +287,18 @@ export const updateResourceRequestStatus = async (
 ): Promise<ApiResponse<ResourceRequest>> => {
   try {
     const admin = await requireRole(["admin"]);
-    const supabase = await createClient();
-    const request = await updateResourceRequestQuery(supabase, requestId, {
+    const request = await updateResourceRequest(requestId, {
       status,
       admin_note: adminNote ? stripHtml(adminNote) : null
     });
-    await createAuditLogQuery(supabase, {
+    await createAuditLog({
       admin_id: admin.id,
       action: "resource_request.updated",
       target_type: "resource_request",
       target_id: request.id,
       details: { status, adminNote }
     });
-    await createNotification(request.user_id, "resource_request", `Your resource request \"${request.title}\" is now ${status}.`, "/dashboard/library/requests");
+    await createNotification(request.user_id, "resource_request", `Your resource request "${request.title}" is now ${status}.`, "/dashboard/library/requests");
     revalidatePath("/admin/requests");
     revalidatePath("/dashboard/library/requests");
     return { data: request };

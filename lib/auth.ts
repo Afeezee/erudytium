@@ -1,8 +1,9 @@
 import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { getAdminClient } from "@/lib/supabase/admin";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
 import type { User, UserRole } from "@/types";
 
 export const requireAuth = async () => {
@@ -15,8 +16,7 @@ export const requireAuth = async () => {
   return authState;
 };
 
-const bootstrapCurrentUserRecord = async (clerkId: string) => {
-  const admin = getAdminClient();
+const bootstrapCurrentUserRecord = async (clerkId: string): Promise<User> => {
   const clerkUser = await currentUser();
 
   if (!clerkUser) {
@@ -33,78 +33,39 @@ const bootstrapCurrentUserRecord = async (clerkId: string) => {
   }
 
   const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") || null;
-  const payload = {
-    clerk_id: clerkId,
-    email,
-    name,
-    avatar_url: clerkUser.imageUrl ?? null
-  };
-  const { data, error } = await admin.from("users").upsert(payload, { onConflict: "clerk_id" }).select("*").single<User>();
 
-  if (!error) {
-    return data;
-  }
+  const [row] = await db
+    .insert(users)
+    .values({
+      clerk_id: clerkId,
+      email,
+      name,
+      avatar_url: clerkUser.imageUrl ?? null
+    })
+    .onConflictDoUpdate({
+      target: users.clerk_id,
+      set: {
+        email,
+        name,
+        avatar_url: clerkUser.imageUrl ?? null
+      }
+    })
+    .returning();
 
-  const { data: existingUser, error: existingUserError } = await admin
-    .from("users")
-    .select("*")
-    .eq("clerk_id", clerkId)
-    .maybeSingle<User>();
-
-  if (!existingUserError && existingUser) {
-    return existingUser;
-  }
-
-  console.error("[auth] bootstrapCurrentUserRecord failed", {
-    clerkId,
-    upsertError: error,
-    lookupError: existingUserError
-  });
-  throw new Error(error.message);
+  return row as unknown as User;
 };
 
-export const getCurrentUserRecord = cache(async () => {
+export const getCurrentUserRecord = cache(async (): Promise<User> => {
   const authState = await requireAuth();
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("users")
-    .select("*")
-    .eq("clerk_id", authState.userId)
-    .maybeSingle<User>();
+  const clerkId = authState.userId;
 
-  if (error) {
-    console.error("[auth] getCurrentUserRecord lookup failed via user-scoped client", {
-      clerkId: authState.userId,
-      error
-    });
+  const [row] = await db.select().from(users).where(eq(users.clerk_id, clerkId)).limit(1);
 
-    const admin = getAdminClient();
-    const { data: fallbackData, error: fallbackError } = await admin
-      .from("users")
-      .select("*")
-      .eq("clerk_id", authState.userId)
-      .maybeSingle<User>();
-
-    if (fallbackError) {
-      console.error("[auth] getCurrentUserRecord admin fallback failed", {
-        clerkId: authState.userId,
-        error: fallbackError
-      });
-      throw new Error(fallbackError.message);
-    }
-
-    if (fallbackData) {
-      return fallbackData;
-    }
-
-    return bootstrapCurrentUserRecord(authState.userId);
+  if (row) {
+    return row as unknown as User;
   }
 
-  if (data) {
-    return data;
-  }
-
-  return bootstrapCurrentUserRecord(authState.userId);
+  return bootstrapCurrentUserRecord(clerkId);
 });
 
 export const requireRole = async (roles: UserRole[]) => {
@@ -115,9 +76,4 @@ export const requireRole = async (roles: UserRole[]) => {
   }
 
   return user;
-};
-
-export const getSupabaseAccessToken = async () => {
-  const { getToken } = await requireAuth();
-  return getToken();
 };

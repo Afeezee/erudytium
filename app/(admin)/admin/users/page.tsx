@@ -1,12 +1,10 @@
 import { UsersTable } from "@/components/admin/UsersTable";
 import { requireRole } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
-import { getAllUsersQuery } from "@/lib/supabase/users";
+import { getAllUsers } from "@/lib/db/queries/users";
 
 export default async function AdminUsersPage({ searchParams }: { searchParams?: { q?: string } }) {
   await requireRole(["admin"]);
-  const supabase = await createClient();
-  const users = await getAllUsersQuery(supabase, searchParams?.q);
+  const users = await getAllUsers(searchParams?.q);
 
   return (
     <div className="space-y-4">

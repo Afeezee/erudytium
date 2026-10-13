@@ -1,10 +1,8 @@
 import { RequestsTable } from "@/components/admin/RequestsTable";
-import { createClient } from "@/lib/supabase/server";
-import { getAllResourceRequestsQuery } from "@/lib/supabase/resources";
+import { getAllResourceRequests } from "@/lib/db/queries/resources";
 
 export default async function AdminRequestsPage() {
-  const supabase = await createClient();
-  const requests = await getAllResourceRequestsQuery(supabase);
+  const requests = await getAllResourceRequests();
 
   return (
     <div className="space-y-4">

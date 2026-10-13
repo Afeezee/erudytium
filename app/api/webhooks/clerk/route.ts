@@ -1,7 +1,9 @@
 import { headers } from "next/headers";
 import { Webhook } from "svix";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
 import { getWebhookEnv } from "@/lib/env";
-import { getAdminClient } from "@/lib/supabase/admin";
 
 type ClerkWebhookUser = {
   id: string;
@@ -13,7 +15,6 @@ type ClerkWebhookUser = {
 
 export async function POST(request: Request) {
   const env = getWebhookEnv();
-  const adminClient = getAdminClient();
   const rawPayload = await request.text();
   const headerPayload = headers();
   const svixId = headerPayload.get("svix-id");
@@ -38,6 +39,12 @@ export async function POST(request: Request) {
   }
 
   const user = event.data;
+
+  if (event.type === "user.deleted") {
+    await db.delete(users).where(eq(users.clerk_id, user.id));
+    return Response.json({ ok: true });
+  }
+
   const email = user.email_addresses?.[0]?.email_address;
 
   if (!email) {
@@ -45,19 +52,24 @@ export async function POST(request: Request) {
   }
 
   const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || null;
-  const payload = {
-    clerk_id: user.id,
-    email,
-    name,
-    avatar_url: user.image_url ?? null
-  };
 
   if (event.type === "user.created" || event.type === "user.updated") {
-    const { error } = await adminClient.from("users").upsert(payload, { onConflict: "clerk_id" });
-
-    if (error) {
-      return new Response(error.message, { status: 500 });
-    }
+    await db
+      .insert(users)
+      .values({
+        clerk_id: user.id,
+        email,
+        name,
+        avatar_url: user.image_url ?? null
+      })
+      .onConflictDoUpdate({
+        target: users.clerk_id,
+        set: {
+          email,
+          name,
+          avatar_url: user.image_url ?? null
+        }
+      });
   }
 
   return Response.json({ ok: true });

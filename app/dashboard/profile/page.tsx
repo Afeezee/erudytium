@@ -1,13 +1,11 @@
 import { ProfileForm } from "@/components/profile/ProfileForm";
 import { getCurrentUserRecord } from "@/lib/auth";
 import { updateProfile } from "@/lib/actions/users";
-import { createClient } from "@/lib/supabase/server";
-import { getUserStatsQuery } from "@/lib/supabase/users";
+import { getUserStats } from "@/lib/db/queries/users";
 
 export default async function ProfilePage() {
   const user = await getCurrentUserRecord();
-  const supabase = await createClient();
-  const stats = await getUserStatsQuery(supabase, user.id);
+  const stats = await getUserStats(user.id);
 
   return (
     <div className="space-y-4">

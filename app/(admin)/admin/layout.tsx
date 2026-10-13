@@ -2,6 +2,8 @@ import Link from "next/link";
 import { ADMIN_NAV } from "@/lib/constants";
 import { requireRole } from "@/lib/auth";
 
+export const dynamic = "force-dynamic";
+
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   await requireRole(["admin"]);
 

@@ -1,13 +1,14 @@
 "use client";
 
 import DOMPurify from "dompurify";
+import { upload } from "@vercel/blob/client";
 import { Crown, Loader2, MoreHorizontal, Paperclip, Pin, Shield, SmilePlus, UserMinus, UserRoundCheck, VolumeX } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { createClient } from "@/lib/supabase/client";
-import { MESSAGE_BUCKET } from "@/lib/constants";
+import type { Channel, PresenceChannel } from "pusher-js";
+import { getPusherClient } from "@/lib/pusher/client";
+import { MESSAGE_UPLOAD_PREFIX } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -17,7 +18,18 @@ import { Input } from "@/components/ui/input";
 import { RelativeTime } from "@/components/ui/RelativeTime";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { createMessageAttachmentUploadUrl, deleteMessage, getOlderMessages, joinRoom, kickMember, leaveRoom, muteMember, pinMessage, promoteToModerator, sendMessage } from "@/lib/actions/rooms";
+import {
+  deleteMessage,
+  ensureRoomUploadPermission,
+  getOlderMessages,
+  joinRoom,
+  kickMember,
+  leaveRoom,
+  muteMember,
+  pinMessage,
+  promoteToModerator,
+  sendMessage
+} from "@/lib/actions/rooms";
 import type { Message, Resource, RoomMember, StudyRoom, User } from "@/types";
 
 interface RoomExperienceProps {
@@ -49,15 +61,14 @@ const mergeMessages = (current: Message[], incoming: Message[]) => {
     );
   }
 
-  return [...messageMap.values()].sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+  return [...messageMap.values()].sort(
+    (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime()
+  );
 };
 
 const renderMessageContent = (content: string) =>
   content.split(URL_SPLIT_PATTERN).map((segment, index) => {
-    if (!segment) {
-      return null;
-    }
-
+    if (!segment) return null;
     if (URL_SEGMENT_PATTERN.test(segment)) {
       return (
         <a
@@ -71,12 +82,19 @@ const renderMessageContent = (content: string) =>
         </a>
       );
     }
-
     return <span key={`${segment}-${index}`}>{segment}</span>;
   });
 
+const sanitizeAttachmentFileName = (fileName: string) => {
+  const trimmed = fileName.trim().toLowerCase();
+  const extension = trimmed.includes(".") ? trimmed.split(".").pop() ?? "bin" : "bin";
+  const baseName = trimmed.replace(/\.[^/.]+$/, "");
+  const safeBase = baseName.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "attachment";
+  const safeExt = extension.replace(/[^a-z0-9]+/g, "") || "bin";
+  return `${safeBase}.${safeExt}`;
+};
+
 export function RoomExperience({ room, currentUser, members, messages: initialMessages, shareableResources }: RoomExperienceProps) {
-  const { getToken } = useAuth();
   const router = useRouter();
   const [messages, setMessages] = useState(initialMessages);
   const [draft, setDraft] = useState("");
@@ -92,11 +110,12 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionIndex] = useState(0);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
-  const channelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
+  const typingThrottleRef = useRef<number>(0);
+  const channelRef = useRef<Channel | PresenceChannel | null>(null);
 
   const currentMember = members.find((member) => member.user_id === currentUser.id);
   const isManager = currentMember ? ["owner", "moderator"].includes(currentMember.role) : false;
@@ -111,7 +130,10 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     [members, mentionQuery, currentUser.id]
   );
   const filteredResources = useMemo(
-    () => shareableResources.filter((resource) => resource.title.toLowerCase().includes(shareQuery.toLowerCase())).slice(0, 8),
+    () =>
+      shareableResources
+        .filter((resource) => resource.title.toLowerCase().includes(shareQuery.toLowerCase()))
+        .slice(0, 8),
     [shareableResources, shareQuery]
   );
 
@@ -119,15 +141,11 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     message.user ??
     members.find((member) => member.user_id === message.user_id)?.user ??
     (message.user_id === currentUser.id
-      ? {
-          id: currentUser.id,
-          name: currentUser.name,
-          avatar_url: currentUser.avatar_url
-        }
+      ? { id: currentUser.id, name: currentUser.name, avatar_url: currentUser.avatar_url }
       : null);
 
-  const upsertMessages = (incomingMessages: Message[]) => {
-    setMessages((current) => mergeMessages(current, incomingMessages.map((message) => ({ ...message, user: resolveMessageUser(message) }))));
+  const upsertMessages = (incoming: Message[]) => {
+    setMessages((current) => mergeMessages(current, incoming.map((message) => ({ ...message, user: resolveMessageUser(message) }))));
   };
 
   const removeMessageFromState = (messageId: string) => {
@@ -158,130 +176,61 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
 
   useEffect(() => {
     const composer = composerRef.current;
-
-    if (!composer) {
-      return;
-    }
-
+    if (!composer) return;
     composer.style.height = "auto";
     composer.style.height = `${Math.min(composer.scrollHeight, 160)}px`;
   }, [draft]);
 
   useEffect(() => {
-    if (!canParticipate) {
-      return;
-    }
+    if (!canParticipate) return;
 
-    let isMounted = true;
-    let supabaseClient: ReturnType<typeof createClient> | null = null;
-    let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
+    const pusher = getPusherClient();
+    const channelName = `presence-room-${room.id}`;
+    const channel = pusher.subscribe(channelName) as PresenceChannel;
+    channelRef.current = channel;
 
-    const setupRealtime = async () => {
-      const supabase = createClient(() => getToken({ skipCache: true }));
-      supabaseClient = supabase;
-      channel = supabase
-        .channel(`room:${room.id}:${currentUser.id}:${Date.now()}`, {
-          config: {
-            presence: { key: currentUser.id },
-            broadcast: { self: false }
-          }
-        })
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "messages",
-            filter: `room_id=eq.${room.id}`
-          },
-          (payload) => {
-            if (!isMounted) {
-              return;
-            }
-
-            upsertMessages([payload.new as Message]);
-            const viewport = scrollViewportRef.current;
-            if (viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 140) {
-              viewport.scrollTop = viewport.scrollHeight;
-            }
-          }
-        )
-        .on(
-          "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "messages",
-            filter: `room_id=eq.${room.id}`
-          },
-          (payload) => {
-            if (!isMounted) {
-              return;
-            }
-
-            upsertMessages([payload.new as Message]);
-          }
-        )
-        .on(
-          "postgres_changes",
-          {
-            event: "DELETE",
-            schema: "public",
-            table: "messages",
-            filter: `room_id=eq.${room.id}`
-          },
-          (payload) => {
-            if (!isMounted) {
-              return;
-            }
-
-            const deletedMessageId = (payload.old as Pick<Message, "id"> | null)?.id;
-
-            if (deletedMessageId) {
-              removeMessageFromState(deletedMessageId);
-            }
-          }
-        )
-        .on("broadcast", { event: "typing" }, ({ payload }) => {
-          if (!isMounted) {
-            return;
-          }
-
-          setTypingUser(payload.name as string);
-          window.clearTimeout(typingTimeoutRef.current ?? undefined);
-          typingTimeoutRef.current = window.setTimeout(() => setTypingUser(null), 2000);
-        })
-        .on("presence", { event: "sync" }, () => {
-          if (!isMounted || !channel) {
-            return;
-          }
-
-          const state = channel.presenceState();
-          setOnlineUserIds(Object.keys(state));
-        })
-        .subscribe(async (status) => {
-          if (status === "SUBSCRIBED" && channel) {
-            await channel.track({ userId: currentUser.id, name: currentUser.name ?? currentUser.email });
-          }
-        });
-
-      channelRef.current = channel;
+    const handleMessageNew = (payload: Message) => {
+      upsertMessages([payload]);
+      const viewport = scrollViewportRef.current;
+      if (viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 140) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
     };
 
-    void setupRealtime();
+    const handleMessageUpdated = (payload: Message) => upsertMessages([payload]);
+    const handleMessageDeleted = (payload: { id: string }) => removeMessageFromState(payload.id);
+    const handleTypingEvent = (payload: { name: string; userId: string }) => {
+      if (payload.userId === currentUser.id) return;
+      setTypingUser(payload.name);
+      window.clearTimeout(typingTimeoutRef.current ?? undefined);
+      typingTimeoutRef.current = window.setTimeout(() => setTypingUser(null), 2000);
+    };
+
+    const syncPresence = () => {
+      const presenceChannel = channelRef.current as PresenceChannel | null;
+      if (!presenceChannel?.members) return;
+      const ids: string[] = [];
+      presenceChannel.members.each((member: { id: string }) => ids.push(member.id));
+      setOnlineUserIds(ids);
+    };
+
+    channel.bind("message:new", handleMessageNew);
+    channel.bind("message:updated", handleMessageUpdated);
+    channel.bind("message:deleted", handleMessageDeleted);
+    channel.bind("client-typing", handleTypingEvent);
+    channel.bind("pusher:subscription_succeeded", syncPresence);
+    channel.bind("pusher:member_added", syncPresence);
+    channel.bind("pusher:member_removed", syncPresence);
 
     return () => {
-      isMounted = false;
+      channel.unbind_all();
+      pusher.unsubscribe(channelName);
       channelRef.current = null;
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
       }
-      if (channel) {
-        void channel.unsubscribe();
-        supabaseClient?.removeChannel(channel);
-      }
     };
-  }, [canParticipate, currentUser.avatar_url, currentUser.email, currentUser.id, currentUser.name, getToken, members, room.id]);
+  }, [canParticipate, currentUser.id, room.id]);
 
   const examCountdown = useMemo(() => {
     if (!room.exam_date || countdownNow === null) return null;
@@ -297,11 +246,7 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
   const focusComposer = () => {
     requestAnimationFrame(() => {
       const composer = composerRef.current;
-
-      if (!composer) {
-        return;
-      }
-
+      if (!composer) return;
       composer.focus();
       const cursorPosition = composer.value.length;
       composer.setSelectionRange(cursorPosition, cursorPosition);
@@ -310,7 +255,6 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
 
   const scrollToBottom = () => {
     const viewport = scrollViewportRef.current;
-
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight;
     }
@@ -318,23 +262,19 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
 
   const handleTogglePin = async (message: Message) => {
     const result = await pinMessage(message.id);
-
     if (result.error || !result.data) {
       toast.error(result.error ?? "Unable to update pin status.");
       return;
     }
-
     upsertMessages([{ ...result.data, user: message.user ?? result.data.user ?? null }]);
   };
 
   const handleDeleteMessage = async (message: Message) => {
     const result = await deleteMessage(message.id);
-
     if (result.error) {
       toast.error(result.error);
       return;
     }
-
     removeMessageFromState(message.id);
   };
 
@@ -343,24 +283,20 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
       toast.error("Join the room before sending messages.");
       return;
     }
-
     if (isMuted) {
       toast.error("You are muted in this room.");
       return;
     }
-
     if (!draft.trim() && !attachmentUrl) return;
 
     startTransition(async () => {
       const sanitized = DOMPurify.sanitize(draft, { ALLOWED_TAGS: [] }).trim();
       const content = sanitized || (attachmentUrl ? "Shared an attachment" : "");
       const result = await sendMessage(room.id, content, attachmentUrl ?? undefined);
-
       if (result.error || !result.data) {
         toast.error(result.error ?? "Unable to send message.");
         return;
       }
-
       upsertMessages([result.data]);
       setDraft("");
       setAttachmentUrl(null);
@@ -376,41 +312,44 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
     }
 
     setAttachmentUploading(true);
-    const uploadTarget = await createMessageAttachmentUploadUrl(room.id, file.name);
-
-    if (uploadTarget.error || !uploadTarget.data) {
-      toast.error(uploadTarget.error ?? "Unable to prepare attachment upload.");
+    const permission = await ensureRoomUploadPermission(room.id);
+    if (permission.error) {
+      toast.error(permission.error);
       setAttachmentUploading(false);
       return;
     }
 
-    const supabase = createClient();
-    const { error } = await supabase.storage.from(MESSAGE_BUCKET).uploadToSignedUrl(uploadTarget.data.path, uploadTarget.data.token, file, {
-      contentType: file.type || undefined
-    });
-
-    if (error) {
-      toast.error(error.message);
+    try {
+      const pathname = `${MESSAGE_UPLOAD_PREFIX}${room.id}/${Date.now()}-${sanitizeAttachmentFileName(file.name)}`;
+      const blob = await upload(pathname, file, {
+        access: "public",
+        handleUploadUrl: "/api/upload/room-attachment",
+        contentType: file.type || "application/octet-stream"
+      });
+      setAttachmentUrl(blob.url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Attachment upload failed.");
+    } finally {
       setAttachmentUploading(false);
-      return;
+      focusComposer();
     }
-
-    const { data } = supabase.storage.from(MESSAGE_BUCKET).getPublicUrl(uploadTarget.data.path);
-    setAttachmentUrl(data.publicUrl);
-    setAttachmentUploading(false);
-    focusComposer();
   };
 
   const handleTyping = () => {
-    if (!canParticipate || isMuted) {
-      return;
+    if (!canParticipate || isMuted) return;
+    const channel = channelRef.current;
+    if (!channel) return;
+    const nowMs = Date.now();
+    if (nowMs - typingThrottleRef.current < 1500) return;
+    typingThrottleRef.current = nowMs;
+    try {
+      channel.trigger("client-typing", {
+        name: currentUser.name ?? currentUser.email,
+        userId: currentUser.id
+      });
+    } catch {
+      // client events require presence/private channels — silently ignore if blocked.
     }
-
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "typing",
-      payload: { name: currentUser.name ?? currentUser.email }
-    });
   };
 
   return (
@@ -421,8 +360,17 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             <h2 className="font-display text-xl font-semibold">Pinned messages</h2>
             <div className="space-y-3">
               {pinnedMessages.map((message) => (
-                <button key={message.id} type="button" className="w-full rounded-2xl border border-border p-3 text-left text-sm transition hover:border-accent" onClick={() => document.getElementById(`message-${message.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-                  <div className="flex items-center gap-2 font-medium text-accent"><Pin className="h-4 w-4" /> {message.user?.name ?? "Member"}</div>
+                <button
+                  key={message.id}
+                  type="button"
+                  className="w-full rounded-2xl border border-border p-3 text-left text-sm transition hover:border-accent"
+                  onClick={() =>
+                    document.getElementById(`message-${message.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+                  }
+                >
+                  <div className="flex items-center gap-2 font-medium text-accent">
+                    <Pin className="h-4 w-4" /> {message.user?.name ?? "Member"}
+                  </div>
                   <p className="mt-2 line-clamp-3 text-neutral-600 dark:text-neutral-300">{message.content}</p>
                 </button>
               ))}
@@ -434,20 +382,27 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             <h2 className="font-display text-xl font-semibold">Study session</h2>
             <p className="text-4xl font-semibold tabular-nums">{new Date(studySeconds * 1000).toISOString().slice(11, 19)}</p>
             <div className="flex gap-3">
-              <Button variant="outline" onClick={() => setTimerRunning((value) => !value)}>{timerRunning ? "Pause" : "Start"}</Button>
-              <Button variant="ghost" onClick={() => setStudySeconds(0)}>Reset</Button>
+              <Button variant="outline" onClick={() => setTimerRunning((value) => !value)}>
+                {timerRunning ? "Pause" : "Start"}
+              </Button>
+              <Button variant="ghost" onClick={() => setStudySeconds(0)}>
+                Reset
+              </Button>
             </div>
-            {examCountdown ? <div className="rounded-2xl bg-warning/10 p-4 text-sm text-warning">Exam countdown: {examCountdown}</div> : null}
+            {examCountdown ? (
+              <div className="rounded-2xl bg-warning/10 p-4 text-sm text-warning">Exam countdown: {examCountdown}</div>
+            ) : null}
 
             <div className="space-y-4 border-t border-border/70 pt-4">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="font-display text-lg font-semibold">Online members</h3>
-                <Badge variant="neutral">{onlineUserIds.length}/{members.length} online</Badge>
+                <Badge variant="neutral">
+                  {onlineUserIds.length}/{members.length} online
+                </Badge>
               </div>
               <div className="space-y-3 xl:max-h-[32rem] xl:overflow-y-auto xl:pr-1">
                 {members.map((member) => {
                   const isOnline = onlineUserIds.includes(member.user_id);
-
                   return (
                     <div key={member.id} className="flex items-center justify-between gap-3 rounded-2xl border border-border p-3">
                       <div className="flex min-w-0 items-center gap-3">
@@ -456,7 +411,9 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                             <AvatarImage src={member.user?.avatar_url ?? undefined} alt={member.user?.name ?? "Member"} />
                             <AvatarFallback>{member.user?.name?.slice(0, 1) ?? "M"}</AvatarFallback>
                           </Avatar>
-                          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${isOnline ? "bg-success" : "bg-neutral-400"}`} />
+                          <span
+                            className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${isOnline ? "bg-success" : "bg-neutral-400"}`}
+                          />
                         </div>
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2 font-medium">
@@ -473,9 +430,18 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                             <Button variant="ghost" size="icon" className="shrink-0">•••</Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => void muteMember(room.id, member.user_id)}><VolumeX className="mr-2 h-4 w-4" />{member.is_muted ? "Unmute" : "Mute"}</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => void kickMember(room.id, member.user_id)}><UserMinus className="mr-2 h-4 w-4" />Kick</DropdownMenuItem>
-                            {isOwner && member.role === "member" ? <DropdownMenuItem onClick={() => void promoteToModerator(room.id, member.user_id)}><UserRoundCheck className="mr-2 h-4 w-4" />Promote to moderator</DropdownMenuItem> : null}
+                            <DropdownMenuItem onClick={() => void muteMember(room.id, member.user_id)}>
+                              <VolumeX className="mr-2 h-4 w-4" />
+                              {member.is_muted ? "Unmute" : "Mute"}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => void kickMember(room.id, member.user_id)}>
+                              <UserMinus className="mr-2 h-4 w-4" />Kick
+                            </DropdownMenuItem>
+                            {isOwner && member.role === "member" ? (
+                              <DropdownMenuItem onClick={() => void promoteToModerator(room.id, member.user_id)}>
+                                <UserRoundCheck className="mr-2 h-4 w-4" />Promote to moderator
+                              </DropdownMenuItem>
+                            ) : null}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       ) : null}
@@ -500,20 +466,37 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                 {examCountdown ? <p className="mt-2 text-sm text-neutral-500">Exam countdown: {examCountdown}</p> : null}
               </div>
               <div className="flex gap-3">
-                {isOwner && room.invite_code ? <Button variant="outline" onClick={() => navigator.clipboard.writeText(`${window.location.origin}/dashboard/rooms/${room.id}?code=${room.invite_code}`)}>Share invite code</Button> : null}
+                {isOwner && room.invite_code ? (
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      navigator.clipboard.writeText(
+                        `${window.location.origin}/dashboard/rooms/${room.id}?code=${room.invite_code}`
+                      )
+                    }
+                  >
+                    Share invite code
+                  </Button>
+                ) : null}
                 {canParticipate ? (
-                  <Button variant="ghost" onClick={async () => { await leaveRoom(room.id); window.location.href = "/dashboard/rooms"; }}>Leave room</Button>
+                  <Button
+                    variant="ghost"
+                    onClick={async () => {
+                      await leaveRoom(room.id);
+                      window.location.href = "/dashboard/rooms";
+                    }}
+                  >
+                    Leave room
+                  </Button>
                 ) : !room.is_private ? (
                   <Button
                     onClick={() =>
                       startTransition(async () => {
                         const result = await joinRoom(room.id);
-
                         if (result.error) {
                           toast.error(result.error);
                           return;
                         }
-
                         router.refresh();
                       })
                     }
@@ -568,7 +551,12 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                   const hasMessageActions = canPinMessage || canDeleteMessage;
 
                   return (
-                    <div key={message.id} id={`message-${message.id}`} className="group flex items-start gap-3" onContextMenu={(event) => event.preventDefault()}>
+                    <div
+                      key={message.id}
+                      id={`message-${message.id}`}
+                      className="group flex items-start gap-3"
+                      onContextMenu={(event) => event.preventDefault()}
+                    >
                       {!grouped ? (
                         <Avatar className="mt-1 h-10 w-10">
                           <AvatarImage src={message.user?.avatar_url ?? undefined} alt={message.user?.name ?? "Member"} />
@@ -587,8 +575,19 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                             <RelativeTime value={message.created_at} className="text-xs text-neutral-500" />
                           </div>
                         ) : null}
-                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-neutral-700 dark:text-neutral-200">{renderMessageContent(message.content)}</p>
-                        {message.file_url ? <a href={message.file_url} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent">Open attachment</a> : null}
+                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-neutral-700 dark:text-neutral-200">
+                          {renderMessageContent(message.content)}
+                        </p>
+                        {message.file_url ? (
+                          <a
+                            href={message.file_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-3 inline-flex rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent"
+                          >
+                            Open attachment
+                          </a>
+                        ) : null}
                       </div>
                       {hasMessageActions ? (
                         <DropdownMenu>
@@ -604,8 +603,14 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-44">
-                            {canPinMessage ? <DropdownMenuItem onClick={() => void handleTogglePin(message)}>{message.is_pinned ? "Unpin message" : "Pin message"}</DropdownMenuItem> : null}
-                            {canDeleteMessage ? <DropdownMenuItem onClick={() => void handleDeleteMessage(message)}>Delete message</DropdownMenuItem> : null}
+                            {canPinMessage ? (
+                              <DropdownMenuItem onClick={() => void handleTogglePin(message)}>
+                                {message.is_pinned ? "Unpin message" : "Pin message"}
+                              </DropdownMenuItem>
+                            ) : null}
+                            {canDeleteMessage ? (
+                              <DropdownMenuItem onClick={() => void handleDeleteMessage(message)}>Delete message</DropdownMenuItem>
+                            ) : null}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       ) : (
@@ -618,7 +623,18 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
             </ScrollArea>
 
             {typingUser ? <p className="text-sm text-neutral-500">{typingUser} is typing...</p> : null}
-            {showScrollToBottom ? <Button variant="outline" className="self-end" onClick={() => { const viewport = scrollViewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; }}>Scroll to bottom</Button> : null}
+            {showScrollToBottom ? (
+              <Button
+                variant="outline"
+                className="self-end"
+                onClick={() => {
+                  const viewport = scrollViewportRef.current;
+                  if (viewport) viewport.scrollTop = viewport.scrollHeight;
+                }}
+              >
+                Scroll to bottom
+              </Button>
+            ) : null}
 
             <div className="space-y-3 rounded-[2rem] border border-border bg-white/70 p-4 dark:bg-neutral-950/70">
               {mentionCandidates.length > 0 ? (
@@ -647,7 +663,13 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                 maxLength={4000}
                 disabled={!canParticipate || isMuted || isPending}
                 className="max-h-40 min-h-[52px] w-full resize-none bg-transparent text-sm outline-none"
-                placeholder={!canParticipate ? "Join the room to participate in chat" : isMuted ? "You are muted in this room" : "Type a message, use @ to mention a member, Shift+Enter for a new line"}
+                placeholder={
+                  !canParticipate
+                    ? "Join the room to participate in chat"
+                    : isMuted
+                      ? "You are muted in this room"
+                      : "Type a message, use @ to mention a member, Shift+Enter for a new line"
+                }
                 onChange={(event) => {
                   setDraft(event.target.value);
                   handleTyping();
@@ -670,12 +692,19 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                       if (file) void uploadAttachment(file);
                     }}
                   />
-                  <Button variant="ghost" size="icon" onClick={() => document.getElementById("room-attachment")?.click()} disabled={attachmentUploading}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => document.getElementById("room-attachment")?.click()}
+                    disabled={attachmentUploading}
+                  >
                     {attachmentUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
                   </Button>
                   <Dialog open={isEmojiDialogOpen} onOpenChange={setIsEmojiDialogOpen}>
                     <DialogTrigger asChild>
-                      <Button variant="ghost" size="icon" aria-label="Open emoji picker"><SmilePlus className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon" aria-label="Open emoji picker">
+                        <SmilePlus className="h-4 w-4" />
+                      </Button>
                     </DialogTrigger>
                     <DialogContent className="max-w-sm">
                       <DialogHeader>
@@ -704,7 +733,6 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     open={isShareDialogOpen}
                     onOpenChange={(open) => {
                       setIsShareDialogOpen(open);
-
                       if (!open) {
                         setShareQuery("");
                       }
@@ -746,7 +774,9 @@ export function RoomExperience({ room, currentUser, members, messages: initialMe
                     </DialogContent>
                   </Dialog>
                 </div>
-                <Button onClick={sendCurrentMessage} disabled={isPending || !canParticipate || isMuted}>Send</Button>
+                <Button onClick={sendCurrentMessage} disabled={isPending || !canParticipate || isMuted}>
+                  Send
+                </Button>
               </div>
             </div>
           </CardContent>

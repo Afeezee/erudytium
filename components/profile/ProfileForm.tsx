@@ -1,13 +1,12 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useAuth } from "@clerk/nextjs";
+import { upload } from "@vercel/blob/client";
 import { useDropzone } from "react-dropzone";
 import { useForm } from "react-hook-form";
 import { useState, useTransition } from "react";
 import { ImagePlus } from "lucide-react";
-import { AVATAR_BUCKET } from "@/lib/constants";
-import { createClient } from "@/lib/supabase/client";
+import { AVATAR_UPLOAD_PREFIX } from "@/lib/constants";
 import { profileSchema } from "@/lib/validations";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +29,6 @@ type ProfileFields = {
 };
 
 export function ProfileForm({ user, stats, action }: ProfileFormProps) {
-  const { getToken } = useAuth();
   const [avatarUrl, setAvatarUrl] = useState(user.avatar_url);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -47,25 +45,24 @@ export function ProfileForm({ user, stats, action }: ProfileFormProps) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp"] },
     maxFiles: 1,
-    maxSize: 5 * 1024 * 1024,
+    maxSize: 4 * 1024 * 1024,
     onDropAccepted: async (files) => {
       const file = files[0];
       if (!file) return;
       setAvatarError(null);
-      const supabase = createClient(() => getToken({ skipCache: true }));
-      const extension = file.name.split(".").pop() ?? "png";
-      const filePath = `${user.id}/avatar-${Date.now()}.${extension}`;
-      const { error } = await supabase.storage.from(AVATAR_BUCKET).upload(filePath, file, { upsert: true });
-
-      if (error) {
-        setAvatarError(error.message);
-        return;
+      try {
+        const extension = file.name.split(".").pop() ?? "png";
+        const blob = await upload(`${AVATAR_UPLOAD_PREFIX}${user.id}/avatar-${Date.now()}.${extension}`, file, {
+          access: "public",
+          handleUploadUrl: "/api/upload/avatar",
+          contentType: file.type || "image/png"
+        });
+        setAvatarUrl(blob.url);
+      } catch (error) {
+        setAvatarError(error instanceof Error ? error.message : "Avatar upload failed.");
       }
-
-      const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(filePath);
-      setAvatarUrl(data.publicUrl);
     },
-    onDropRejected: () => setAvatarError("Please upload a PNG, JPG, or WEBP image under 5MB.")
+    onDropRejected: () => setAvatarError("Please upload a PNG, JPG, or WEBP image under 4MB.")
   });
 
   return (
@@ -91,7 +88,7 @@ export function ProfileForm({ user, stats, action }: ProfileFormProps) {
             <ImagePlus className="h-6 w-6" />
           </div>
           <p className="mt-4 font-medium">Drop a new avatar here or click to browse</p>
-          <p className="mt-1 text-sm text-neutral-500">PNG, JPG, or WEBP up to 5MB.</p>
+          <p className="mt-1 text-sm text-neutral-500">PNG, JPG, or WEBP up to 4MB.</p>
           {avatarError ? <p className="mt-3 text-sm text-error">{avatarError}</p> : null}
         </div>
         <div className="grid gap-4 md:grid-cols-3">

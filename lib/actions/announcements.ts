@@ -1,20 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
 import { createNotification } from "@/lib/actions/notifications";
-import { getAdminClient } from "@/lib/supabase/admin";
 import { announcementSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
-import { createAnnouncementQuery, getAnnouncementsQuery } from "@/lib/supabase/announcements";
-import { getActiveUsersQuery } from "@/lib/supabase/users";
+import { createAnnouncement as createAnnouncementQuery, getAnnouncements as getAnnouncementsQuery } from "@/lib/db/queries/announcements";
+import { getActiveUsers } from "@/lib/db/queries/users";
 import type { Announcement, ApiResponse } from "@/types";
 
 export const getAnnouncements = async (department?: string): Promise<ApiResponse<Announcement[]>> => {
   try {
-    const supabase = await createClient();
-    const announcements = await getAnnouncementsQuery(supabase, department);
+    const announcements = await getAnnouncementsQuery(department);
     return { data: announcements };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load announcements." };
@@ -35,16 +32,14 @@ export const createAnnouncement = async (formData: FormData): Promise<ApiRespons
   try {
     await requireRole(["lecturer", "admin"]);
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const adminClient = getAdminClient();
-    const announcement = await createAnnouncementQuery(supabase, {
+    const announcement = await createAnnouncementQuery({
       author_id: user.id,
       title: parsed.data.title,
       body: parsed.data.body,
       department: parsed.data.department || null
     });
 
-    const recipients = await getActiveUsersQuery(adminClient, {
+    const recipients = await getActiveUsers({
       department: announcement.department,
       excludeUserIds: [user.id]
     });

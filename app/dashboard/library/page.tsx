@@ -5,14 +5,12 @@ import { Input } from "@/components/ui/input";
 import { ResourceCard } from "@/components/ui/ResourceCard";
 import { ResourceCardSkeleton } from "@/components/ui/Skeleton";
 import { Button } from "@/components/ui/button";
-import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord } from "@/lib/auth";
-import { getCategoriesQuery, searchResourcesQuery } from "@/lib/supabase/resources";
+import { getCategories, searchResources } from "@/lib/db/queries/resources";
 import { toggleBookmark } from "@/lib/actions/resources";
 import type { ResourceFilters } from "@/types";
 
 async function LibraryResults({ searchParams }: { searchParams?: Record<string, string | string[] | undefined> }) {
-  const supabase = await createClient();
   const user = await getCurrentUserRecord();
   const page = Number(searchParams?.page ?? 1);
   const query = String(searchParams?.q ?? "");
@@ -24,7 +22,7 @@ async function LibraryResults({ searchParams }: { searchParams?: Record<string, 
     to: typeof searchParams?.to === "string" ? searchParams.to : undefined,
     sort: typeof searchParams?.sort === "string" ? (searchParams.sort as ResourceFilters["sort"]) : "newest"
   };
-  const [categories, results] = await Promise.all([getCategoriesQuery(supabase), searchResourcesQuery(supabase, user.id, query, filters, page)]);
+  const [categories, results] = await Promise.all([getCategories(), searchResources(user.id, query, filters, page)]);
 
   return (
     <div className="grid gap-6 xl:grid-cols-[280px_1fr]">

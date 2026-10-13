@@ -1,13 +1,11 @@
 import { ModerationTable } from "@/components/admin/ModerationTable";
-import { createClient } from "@/lib/supabase/server";
-import { getResourcesForModerationQuery } from "@/lib/supabase/resources";
+import { getResourcesForModeration } from "@/lib/db/queries/resources";
 
 export default async function AdminResourcesPage() {
-  const supabase = await createClient();
   const [pending, approved, rejected] = await Promise.all([
-    getResourcesForModerationQuery(supabase, "pending"),
-    getResourcesForModerationQuery(supabase, "approved"),
-    getResourcesForModerationQuery(supabase, "rejected")
+    getResourcesForModeration("pending"),
+    getResourcesForModeration("approved"),
+    getResourcesForModeration("rejected")
   ]);
 
   return (

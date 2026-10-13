@@ -1,10 +1,8 @@
 import { RoomsTable } from "@/components/admin/RoomsTable";
-import { createClient } from "@/lib/supabase/server";
-import { getAdminRoomsQuery } from "@/lib/supabase/rooms";
+import { getAdminRooms } from "@/lib/db/queries/rooms";
 
 export default async function AdminRoomsPage() {
-  const supabase = await createClient();
-  const rooms = await getAdminRoomsQuery(supabase);
+  const rooms = await getAdminRooms();
 
   return (
     <div className="space-y-4">

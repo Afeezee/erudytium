@@ -10,9 +10,11 @@ export const ALLOWED_RESOURCE_MIME_TYPES = [
 ] as const;
 
 export const MAX_RESOURCE_UPLOAD_BYTES = 50 * 1024 * 1024;
-export const AVATAR_BUCKET = "avatars";
-export const RESOURCE_BUCKET = "resources";
-export const MESSAGE_BUCKET = "room-attachments";
+export const MAX_AVATAR_UPLOAD_BYTES = 4 * 1024 * 1024;
+export const MAX_MESSAGE_UPLOAD_BYTES = 25 * 1024 * 1024;
+export const AVATAR_UPLOAD_PREFIX = "avatars/";
+export const RESOURCE_UPLOAD_PREFIX = "resources/";
+export const MESSAGE_UPLOAD_PREFIX = "room-attachments/";
 
 export const RESOURCE_RESTRICTIONS = [
   { label: "All", value: "all" },

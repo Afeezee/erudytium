@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { upload } from "@vercel/blob/client";
 import { useForm } from "react-hook-form";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -11,9 +12,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TagInput } from "@/components/ui/TagInput";
 import { Textarea } from "@/components/ui/textarea";
-import { cancelResourceUpload, createResourceUploadUrl, finalizeResourceUpload } from "@/lib/actions/resources";
-import { MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_BUCKET, RESOURCE_RESTRICTIONS } from "@/lib/constants";
-import { createClient } from "@/lib/supabase/client";
+import { cancelResourceUpload, finalizeResourceUpload } from "@/lib/actions/resources";
+import { MAX_RESOURCE_UPLOAD_BYTES, RESOURCE_RESTRICTIONS, RESOURCE_UPLOAD_PREFIX } from "@/lib/constants";
 import { resourceUploadSchema } from "@/lib/validations";
 import { formatFileSize } from "@/lib/utils";
 import type { Category } from "@/types";
@@ -22,6 +22,15 @@ import { z } from "zod";
 const resourceUploadLimitLabel = formatFileSize(MAX_RESOURCE_UPLOAD_BYTES);
 
 type UploadValues = z.infer<typeof resourceUploadSchema>;
+
+const sanitizeFileName = (fileName: string) => {
+  const trimmed = fileName.trim().toLowerCase();
+  const extension = trimmed.includes(".") ? trimmed.split(".").pop() ?? "bin" : "bin";
+  const baseName = trimmed.replace(/\.[^/.]+$/, "");
+  const safeBase = baseName.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "resource";
+  const safeExt = extension.replace(/[^a-z0-9]+/g, "") || "bin";
+  return `${safeBase}.${safeExt}`;
+};
 
 export function ResourceUploadForm({ categories }: { categories: Category[] }) {
   const hasCategories = categories.length > 0;
@@ -55,35 +64,24 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
         }
 
         startTransition(async () => {
-          let uploadPath: string | null = null;
-          let uploadedToStorage = false;
+          let uploadedUrl: string | null = null;
 
           try {
             setError(null);
             setProgress(10);
-            const uploadTarget = await createResourceUploadUrl(file.name);
 
-            if (uploadTarget.error || !uploadTarget.data) {
-              setError(uploadTarget.error ?? "Unable to prepare file upload right now. Please try again.");
-              return;
-            }
-
-            uploadPath = uploadTarget.data.path;
-            setProgress(35);
-
-            const supabase = createClient();
-            const { error: uploadError } = await supabase.storage.from(RESOURCE_BUCKET).uploadToSignedUrl(uploadTarget.data.path, uploadTarget.data.token, file, {
-              contentType: file.type || undefined
+            const pathname = `${RESOURCE_UPLOAD_PREFIX}${Date.now()}-${sanitizeFileName(file.name)}`;
+            const blob = await upload(pathname, file, {
+              access: "public",
+              handleUploadUrl: "/api/upload/resource",
+              contentType: file.type || "application/octet-stream",
+              onUploadProgress: (event) => {
+                setProgress(10 + Math.min(70, Math.round(event.percentage * 0.7)));
+              }
             });
 
-            if (uploadError) {
-              await cancelResourceUpload(uploadTarget.data.path);
-              setError(uploadError.message);
-              return;
-            }
-
-            uploadedToStorage = true;
-            setProgress(80);
+            uploadedUrl = blob.url;
+            setProgress(85);
 
             const formData = new FormData();
             formData.set("title", values.title);
@@ -91,8 +89,9 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
             formData.set("categoryId", values.categoryId ?? "");
             formData.set("restrictedTo", values.restrictedTo);
             formData.set("tags", tags.join(","));
-            formData.set("filePath", uploadTarget.data.path);
+            formData.set("blobUrl", blob.url);
             formData.set("fileSize", String(file.size));
+            formData.set("fileType", file.type || "application/octet-stream");
 
             const result = await finalizeResourceUpload(formData);
 
@@ -117,8 +116,8 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
             setProgress(100);
             toast.success("Your resource has been submitted for review");
           } catch (submissionError) {
-            if (uploadPath && !uploadedToStorage) {
-              await cancelResourceUpload(uploadPath);
+            if (uploadedUrl) {
+              await cancelResourceUpload(uploadedUrl);
             }
 
             setError(submissionError instanceof Error ? submissionError.message : "Unable to upload resource right now. Please try again.");
@@ -201,7 +200,7 @@ export function ResourceUploadForm({ categories }: { categories: Category[] }) {
             success={Boolean(file) && !error}
           />
           <div className="rounded-3xl bg-neutral-100/80 p-5 text-sm leading-6 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
-            Files upload directly to storage, are scanned server-side for MIME integrity, and are submitted with a pending status for moderation. Maximum size: {resourceUploadLimitLabel}.
+            Files upload directly to storage and are submitted with a pending status for moderation. Maximum size: {resourceUploadLimitLabel}.
           </div>
         </div>
       </div>

@@ -1,11 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
-import { getAuditLogsQuery } from "@/lib/supabase/audit";
+import { getAuditLogs } from "@/lib/db/queries/audit";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 export default async function AdminAuditPage({ searchParams }: { searchParams?: { action?: string; from?: string; to?: string } }) {
-  const supabase = await createClient();
-  const logs = await getAuditLogsQuery(supabase, searchParams?.action, searchParams?.from, searchParams?.to);
+  const logs = await getAuditLogs(searchParams?.action, searchParams?.from, searchParams?.to);
 
   return (
     <div className="space-y-4">

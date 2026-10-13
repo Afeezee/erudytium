@@ -1,13 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRecord, requireRole } from "@/lib/auth";
-import { getAdminClient } from "@/lib/supabase/admin";
 import { notificationPreferencesSchema, profileSchema, userAdminUpdateSchema } from "@/lib/validations";
 import { stripHtml } from "@/lib/utils/sanitize";
-import { createAuditLogQuery } from "@/lib/supabase/audit";
-import { getAllUsersQuery, getUserByIdQuery, getUserStatsQuery, updateManagedUserQuery, updateUserProfileQuery } from "@/lib/supabase/users";
+import { createAuditLog } from "@/lib/db/queries/audit";
+import {
+  getAllUsers as getAllUsersQuery,
+  getUserById as getUserByIdQuery,
+  getUserStats,
+  updateManagedUser,
+  updateUserProfile
+} from "@/lib/db/queries/users";
 import type { ApiResponse, User } from "@/types";
 
 const toFieldErrors = (issues: { path: (string | number)[]; message: string }[]) =>
@@ -31,11 +35,8 @@ export const updateProfile = async (formData: FormData): Promise<ApiResponse<Use
 
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const updatedUser = await updateUserProfileQuery(supabase, user.id, {
-      ...parsed.data,
-      avatar_url: stripHtml(String(formData.get("avatarUrl") ?? "")) || user.avatar_url
-    });
+    const avatarUrl = stripHtml(String(formData.get("avatarUrl") ?? "")) || user.avatar_url;
+    const updatedUser = await updateUserProfile(user.id, { ...parsed.data, avatar_url: avatarUrl });
     revalidatePath("/dashboard/profile");
     return { data: updatedUser };
   } catch (error) {
@@ -52,8 +53,7 @@ export const updateNotificationPreferences = async (payload: User["user_preferen
 
   try {
     const user = await getCurrentUserRecord();
-    const supabase = await createClient();
-    const updatedUser = await updateUserProfileQuery(supabase, user.id, { user_preferences: parsed.data });
+    const updatedUser = await updateUserProfile(user.id, { user_preferences: parsed.data });
     revalidatePath("/dashboard/settings/notifications");
     return { data: updatedUser };
   } catch (error) {
@@ -61,11 +61,10 @@ export const updateNotificationPreferences = async (payload: User["user_preferen
   }
 };
 
-export const getUserById = async (id: string): Promise<ApiResponse<User & { stats: Awaited<ReturnType<typeof getUserStatsQuery>> }>> => {
+export const getUserById = async (id: string): Promise<ApiResponse<User & { stats: Awaited<ReturnType<typeof getUserStats>> }>> => {
   try {
-    const supabase = await createClient();
-    const user = await getUserByIdQuery(supabase, id);
-    const stats = await getUserStatsQuery(supabase, user.id);
+    const user = await getUserByIdQuery(id);
+    const stats = await getUserStats(user.id);
     return { data: { ...user, stats } };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load user." };
@@ -75,8 +74,7 @@ export const getUserById = async (id: string): Promise<ApiResponse<User & { stat
 export const getAllUsers = async (search?: string): Promise<ApiResponse<User[]>> => {
   try {
     await requireRole(["admin"]);
-    const supabase = await createClient();
-    const users = await getAllUsersQuery(supabase, search);
+    const users = await getAllUsersQuery(search);
     return { data: users };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Unable to load users." };
@@ -92,13 +90,11 @@ export const updateUserRole = async (payload: { userId: string; role: User["role
 
   try {
     const admin = await requireRole(["admin"]);
-    const supabase = await createClient();
-    const adminClient = getAdminClient();
-    const user = await updateManagedUserQuery(adminClient, parsed.data.userId, {
+    const user = await updateManagedUser(parsed.data.userId, {
       role: parsed.data.role,
       is_active: parsed.data.isActive
     });
-    await createAuditLogQuery(supabase, {
+    await createAuditLog({
       admin_id: admin.id,
       action: "user.updated",
       target_type: "user",

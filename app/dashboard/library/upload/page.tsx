@@ -1,10 +1,8 @@
 import { ResourceUploadForm } from "@/components/library/ResourceUploadForm";
-import { createClient } from "@/lib/supabase/server";
-import { getCategoriesQuery } from "@/lib/supabase/resources";
+import { getCategories } from "@/lib/db/queries/resources";
 
 export default async function ResourceUploadPage() {
-  const supabase = await createClient();
-  const categories = await getCategoriesQuery(supabase);
+  const categories = await getCategories();
 
   return (
     <div className="space-y-4">
