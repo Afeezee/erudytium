@@ -10,10 +10,14 @@ const globalForDb = globalThis as unknown as {
 };
 
 const buildPool = () => {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) {
     throw new Error("DATABASE_URL is not set. Point it at your Neon connection string (include ?sslmode=require).");
   }
+  // pg-connection-string's recent default upgrades sslmode=require → verify-full,
+  // which conflicts with our rejectUnauthorized override and causes ECONNRESET
+  // against Neon. Strip SSL hints from the URL and set ssl config explicitly.
+  const connectionString = raw.replace(/[?&]sslmode=[^&]*/g, "").replace(/[?&]channel_binding=[^&]*/g, "");
   return new Pool({
     connectionString,
     max: 10,
